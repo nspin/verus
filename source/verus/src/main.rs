@@ -153,7 +153,7 @@ fn run() -> Result<std::process::ExitStatus, String> {
             {
                 if unpretty_arg {
                     warning(
-                        "a `-Z unpretty` argument was specified, which is incompatible with history recording; disabling hisotry recording for this session",
+                        "a `-Z unpretty` argument was specified, which is incompatible with history recording; disabling history recording for this session",
                     );
                     None
                 } else {
