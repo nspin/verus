@@ -11,5 +11,8 @@ rustc_tools_util = "0.3.0"
 [build-dependencies]
 rustc_tools_util = "0.3.0"
 
+[features]
+singular = ["rust_verify/singular"]
+
 [package.metadata.rust-analyzer]
 rustc_private = true

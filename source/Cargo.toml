@@ -20,6 +20,8 @@ members = [
   "hacking/cargo-verus",
   "hacking/examples/integers",
   "hacking/examples/doubly-linked-xor",
+  "hacking/examples/rust-verify-examples",
+  "hacking/examples/foo",
 ]
 exclude = [
   # "vstd",

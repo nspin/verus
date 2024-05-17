@@ -5,10 +5,11 @@ extern crate rustc_interface;
 extern crate rustc_session;
 extern crate rustc_span;
 
+use std::collections::BTreeMap;
 use std::env;
 use std::io::Read;
 use std::mem;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::time::Instant;
 
@@ -47,11 +48,12 @@ fn extract_inner_args(
     mem::swap(args, &mut new);
 }
 
+// TODO more
 fn track_verus_args(psess: &mut ParseSess, args_env_var: &Option<String>) {
-    psess
-        .env_depinfo
-        .get_mut()
-        .insert((Symbol::intern("__VERUS_ARGS__"), args_env_var.as_deref().map(Symbol::intern)));
+    psess.env_depinfo.get_mut().insert((
+        Symbol::intern("__VERUS_DRIVER_ARGS__"),
+        args_env_var.as_deref().map(Symbol::intern),
+    ));
 }
 
 /// Track files that may be accessed at runtime in `file_depinfo` so that cargo will re-run verus
@@ -151,6 +153,28 @@ pub fn main() {
             return rustc_driver::RunCompiler::new(&orig_args, &mut DefaultCallbacks).run();
         }
 
+        let cargo_package_name = env::var("CARGO_PKG_NAME").unwrap();
+        let cargo_package_version = env::var("CARGO_PKG_VERSION").unwrap();
+        let cargo_crate_name = env::var("CARGO_CRATE_NAME").unwrap();
+
+        let is_build_script = cargo_crate_name.starts_with("build_script");
+
+        let verus_driver_args_for_package = env::var(format!(
+            "__VERUS_DRIVER_ARGS_FOR_{}-{}",
+            cargo_package_name, cargo_package_version
+        ))
+        .unwrap();
+
+        let verify_package = env::var(format!(
+            "__VERUS_DRIVER_VERIFY_{}-{}",
+            cargo_package_name, cargo_package_version
+        ))
+        .ok()
+        .map(|v| v == "1")
+        .unwrap_or(false);
+
+        let verify_crate = verify_package && !is_build_script;
+
         let mut verus_inner_args = vec![];
 
         let verus_inner_arg_tag = "--verus-arg";
@@ -159,31 +183,65 @@ pub fn main() {
             verus_inner_args.push(inner_arg)
         });
 
-        let verus_args_var = env::var("__VERUS_ARGS__").ok();
+        let verus_args_var = env::var("__VERUS_DRIVER_ARGS__").ok();
         let mut verus_args = verus_args_var
             .as_deref()
             .unwrap_or_default()
-            .split("__VERUS_ARGS_SEP__")
+            .split("__VERUS_DRIVER_ARGS_SEP__")
             .skip(1)
             .map(ToOwned::to_owned)
             .collect::<Vec<String>>();
+
+        verus_args.extend(
+            verus_driver_args_for_package
+                .split("__VERUS_DRIVER_ARGS_SEP__")
+                .skip(1)
+                .map(ToOwned::to_owned),
+        );
 
         extract_inner_args(verus_inner_arg_tag, &mut verus_args, |inner_arg| {
             verus_inner_args.push(inner_arg)
         });
 
-        let crate_is_proc_macro =
-            orig_args.windows(2).any(|window| window[0] == "--crate-type" && window[1] == "proc-macro");
+        let probe = {
+            let mut callbacks = ProbeCallbacks::new();
+            let status = rustc_driver::RunCompiler::new(&orig_args, &mut callbacks).run();
+            // TODO proper error message
+            assert!(status.is_ok(), "{:?}", status);
+            callbacks.completed.unwrap()
+        };
 
-        // HACK
-        let crate_name = env::var("CARGO_CRATE_NAME").unwrap_or_default();
+        // eprintln!("XXX {:?}", probe);
 
-        let crate_is_builtin = crate_name == "builtin";
-        let crate_is_vstd = crate_name == "vstd";
+        verus_inner_args.extend([
+            "--export".to_owned(),
+            format!("{}", probe.crate_meta_path.with_extension("vir").display()),
+        ]);
 
-        let crate_should_not_by_verified = crate_is_proc_macro | crate_is_builtin;
+        {
+            let mut it = orig_args.iter();
+            while let Some(arg) = it.next() {
+                if arg == "--extern" {
+                    let pair = it.next().unwrap();
+                    let mut split = pair.splitn(2, '=');
+                    let key = split.next().unwrap();
+                    if let Some(rmeta_path) = split.next() {
+                        let vir_path = PathBuf::from(rmeta_path).with_extension("vir");
+                        // HACK HACK HACK
+                        if vir_path.exists() {
+                            verus_inner_args.extend([
+                                "--import".to_owned(),
+                                format!("{key}={}", vir_path.display()),
+                            ]);
+                        }
+                    } else {
+                        assert_eq!(key, "proc_macro");
+                    }
+                }
+            }
+        }
 
-        if crate_should_not_by_verified {
+        if !verify_crate {
             extend_rustc_args_for_excluded(&mut orig_args);
             return rustc_driver::RunCompiler::new(
                 &orig_args,
@@ -194,10 +252,6 @@ pub fn main() {
         }
 
         orig_args.extend(verus_args);
-
-        if crate_is_vstd {
-            verus_inner_args.push("--no-vstd".to_owned());
-        }
 
         let program_name_for_config = "TODO";
 
@@ -255,7 +309,10 @@ pub fn main() {
 
         if status.is_err() || verifier.encountered_vir_error {
             // TODO proper error message
-            panic!("status.is_err() || verifier.encountered_vir_error... {:?} {:?}", status, verifier.encountered_vir_error);
+            panic!(
+                "status.is_err() || verifier.encountered_vir_error... {:?} {:?}",
+                status, verifier.encountered_vir_error
+            );
         }
 
         let compile_status = if !verifier.args.compile && verifier.args.no_lifetime {
@@ -300,6 +357,52 @@ impl rustc_driver::Callbacks for RustcCallbacks {
         config.parse_sess_created = Some(Box::new(move |psess| {
             track_verus_args(psess, &verus_args_var);
         }));
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+struct ProbeCompleted {
+    crate_name: String,
+    crate_types: Vec<rustc_session::config::CrateType>,
+    crate_meta_path: PathBuf,
+    extern_crate_meta_paths: BTreeMap<String, PathBuf>,
+}
+
+struct ProbeCallbacks {
+    completed: Option<ProbeCompleted>,
+}
+
+impl ProbeCallbacks {
+    fn new() -> Self {
+        Self { completed: None }
+    }
+}
+
+impl rustc_driver::Callbacks for ProbeCallbacks {
+    fn after_crate_root_parsing<'tcx>(
+        &mut self,
+        _compiler: &rustc_interface::interface::Compiler,
+        queries: &'tcx rustc_interface::Queries<'tcx>,
+    ) -> rustc_driver::Compilation {
+        let completed = queries.global_ctxt().unwrap().enter(|tcx| ProbeCompleted {
+            crate_name: tcx.crate_name(rustc_span::def_id::LOCAL_CRATE).as_str().to_owned(),
+            crate_types: tcx.crate_types().to_vec(),
+            crate_meta_path: tcx
+                .output_filenames(())
+                .output_path(rustc_session::config::OutputType::Metadata),
+            extern_crate_meta_paths: tcx
+                .crates(())
+                .iter()
+                .map(|&crate_num| {
+                    let name = tcx.crate_name(crate_num).as_str().to_owned();
+                    let path = tcx.used_crate_source(crate_num).rmeta.as_ref().unwrap().0.clone();
+                    (name, path)
+                })
+                .collect(),
+        });
+        self.completed.replace(completed);
+        rustc_driver::Compilation::Stop
     }
 }
 
