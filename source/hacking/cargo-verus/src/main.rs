@@ -44,7 +44,6 @@ pub fn main() {
 
 struct VerusCmd {
     cargo_subcommand: &'static str,
-    no_deps: bool,
     args: Vec<String>,
     verus_args: Vec<String>,
 }
@@ -55,7 +54,6 @@ impl VerusCmd {
         I: Iterator<Item = String>,
     {
         let mut cargo_subcommand = "check";
-        let mut no_deps = false;
         let mut args = vec![];
         let mut verus_args: Vec<String> = vec![];
 
@@ -63,10 +61,7 @@ impl VerusCmd {
             match arg.as_str() {
                 "--compile" => {
                     cargo_subcommand = "build";
-                    continue;
-                }
-                "--no-deps" => {
-                    no_deps = true;
+                    verus_args.push("--verus-arg=--compile".to_owned());
                     continue;
                 }
                 "--" => break,
@@ -78,7 +73,7 @@ impl VerusCmd {
 
         verus_args.append(&mut (old_args.collect()));
 
-        Self { cargo_subcommand, no_deps, args, verus_args }
+        Self { cargo_subcommand, args, verus_args }
     }
 
     fn path() -> PathBuf {
@@ -98,7 +93,7 @@ impl VerusCmd {
         let verus_args: String = self
             .verus_args
             .iter()
-            .map(|arg| ["__VERUS_HACKERY__", arg])
+            .map(|arg| ["__VERUS_ARGS_SEP__", arg])
             .flatten()
             .collect::<String>();
 
@@ -106,10 +101,6 @@ impl VerusCmd {
             .env("__VERUS_ARGS__", verus_args)
             .arg(self.cargo_subcommand)
             .args(&self.args);
-
-        if self.no_deps {
-            cmd.env("__VERUS_NO_DEPS__", "1");
-        }
 
         cmd
     }
@@ -122,8 +113,6 @@ where
     let cmd = VerusCmd::new(old_args);
 
     let mut cmd = cmd.into_std_cmd();
-
-    // eprintln!("XXX {:?}", cmd);
 
     let exit_status =
         cmd.spawn().expect("could not run cargo").wait().expect("failed to wait for cargo?");
@@ -143,7 +132,6 @@ Usage:
     cargo verus [OPTIONS] [--] [<ARGS>...]
 
 OPTIONS are passed to cargo check or cargo build, except the following, which are handled specially:
-    --no-deps                Run Verus only on the given crate, without verifying the dependencies
     --compile
     -h, --help               Print this message
     -V, --version            Print version info and exit
