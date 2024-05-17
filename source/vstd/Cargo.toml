@@ -20,3 +20,7 @@ builtin = { path = "../builtin" }
 default = ["std"]
 std = ["alloc"]
 alloc = []
+
+[package.metadata.verus]
+verify = true
+no-vstd = true

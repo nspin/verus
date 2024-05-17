@@ -7,3 +7,6 @@ edition = "2021"
 [dependencies]
 builtin = { path = "../../../builtin" }
 builtin_macros = { path = "../../../builtin_macros" }
+
+[package.metadata.verus]
+verify = true
