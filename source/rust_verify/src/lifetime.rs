@@ -376,6 +376,8 @@ pub(crate) fn check_tracked_lifetimes<'tcx>(
     let rustc_args = vec![LIFETIME_DRIVER_ARG, LifetimeFileLoader::FILENAME, "--error-format=json"];
 
     let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        // Avoid a warning about jobserver fd
+        .env_remove("CARGO_MAKEFLAGS")
         .args(&rustc_args[..])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
