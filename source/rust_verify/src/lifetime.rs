@@ -169,7 +169,7 @@ macro_rules! ldbg {
 }
 
 // Call Rust's mir_borrowck to check lifetimes of #[spec] and #[proof] code and variables
-pub(crate) fn check<'tcx>(queries: &'tcx rustc_interface::Queries<'tcx>) {
+pub fn check<'tcx>(queries: &'tcx rustc_interface::Queries<'tcx>) {
     queries.global_ctxt().expect("global_ctxt").enter(|tcx| {
         let hir = tcx.hir();
         let krate = hir.krate();

@@ -16,9 +16,13 @@ members = [
   "tools/internals_interface",
   "tools/line_count",
   "tools/qi-graph",
+  "hacking/verus-driver",
+  "hacking/cargo-verus",
+  "hacking/examples/integers",
+  "hacking/examples/doubly-linked-xor",
 ]
 exclude = [
-  "vstd",
+  # "vstd",
 ]
 
 # do not modify the following two lines
