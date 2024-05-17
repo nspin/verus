@@ -172,15 +172,16 @@ pub fn main() {
             verus_inner_args.push(inner_arg)
         });
 
+        let crate_is_proc_macro =
+            orig_args.windows(2).any(|window| window[0] == "--crate-type" && window[1] == "proc-macro");
+
         // HACK
         let crate_name = env::var("CARGO_CRATE_NAME").unwrap_or_default();
 
-        let crate_is_dep_of_vstd =
-            ["builtin", "builtin_macros", "state_machines_macros"].contains(&crate_name.as_str());
-
+        let crate_is_builtin = crate_name == "builtin";
         let crate_is_vstd = crate_name == "vstd";
 
-        let crate_should_not_by_verified = crate_is_dep_of_vstd;
+        let crate_should_not_by_verified = crate_is_proc_macro | crate_is_builtin;
 
         if crate_should_not_by_verified {
             extend_rustc_args_for_excluded(&mut orig_args);
@@ -194,7 +195,7 @@ pub fn main() {
 
         orig_args.extend(verus_args);
 
-        if crate_is_vstd || crate_is_dep_of_vstd {
+        if crate_is_vstd {
             verus_inner_args.push("--no-vstd".to_owned());
         }
 
