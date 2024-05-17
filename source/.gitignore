@@ -3,3 +3,4 @@ z3
 /.verus-log/
 doc/
 /target-verus/
+/target-test/
