@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::time::Instant;
 
+use sha2::{Digest, Sha256};
+
 use rustc_interface::interface;
 use rustc_session::config::ErrorOutputType;
 use rustc_session::parse::ParseSess;
@@ -153,27 +155,28 @@ pub fn main() {
             return rustc_driver::RunCompiler::new(&orig_args, &mut DefaultCallbacks).run();
         }
 
-        let cargo_package_name = env::var("CARGO_PKG_NAME").unwrap();
-        let cargo_package_version = env::var("CARGO_PKG_VERSION").unwrap();
+        let package_id = get_package_id_from_env();
+
         let cargo_crate_name = env::var("CARGO_CRATE_NAME").unwrap();
 
         let is_build_script = cargo_crate_name.starts_with("build_script");
 
-        let verus_driver_args_for_package = env::var(format!(
-            "__VERUS_DRIVER_ARGS_FOR_{}-{}",
-            cargo_package_name, cargo_package_version
-        ))
-        .unwrap();
+        let verus_driver_args_for_package = unpack_verus_driver_args_for_env(
+            &env::var(format!("__VERUS_DRIVER_ARGS_FOR_{package_id}",)).unwrap_or_default(),
+        );
 
-        let verify_package = env::var(format!(
-            "__VERUS_DRIVER_VERIFY_{}-{}",
-            cargo_package_name, cargo_package_version
-        ))
-        .ok()
-        .map(|v| v == "1")
-        .unwrap_or(false);
+        let verify_package =
+            env::var(format!("__VERUS_DRIVER_VERIFY_{package_id}")).unwrap_or_default() == "1";
 
         let verify_crate = verify_package && !is_build_script;
+
+        let imports_from_env_val =
+            env::var(format!("__VERUS_DRIVER_IMPORTS_FOR_{package_id}")).unwrap_or_default();
+        let imports_from_env = if imports_from_env_val.is_empty() {
+            vec![]
+        } else {
+            imports_from_env_val.split(",").collect::<Vec<_>>()
+        };
 
         let mut verus_inner_args = vec![];
 
@@ -184,20 +187,9 @@ pub fn main() {
         });
 
         let verus_args_var = env::var("__VERUS_DRIVER_ARGS__").ok();
-        let mut verus_args = verus_args_var
-            .as_deref()
-            .unwrap_or_default()
-            .split("__VERUS_DRIVER_ARGS_SEP__")
-            .skip(1)
-            .map(ToOwned::to_owned)
-            .collect::<Vec<String>>();
+        let mut verus_args = unpack_verus_driver_args_for_env(verus_args_var.as_deref().unwrap());
 
-        verus_args.extend(
-            verus_driver_args_for_package
-                .split("__VERUS_DRIVER_ARGS_SEP__")
-                .skip(1)
-                .map(ToOwned::to_owned),
-        );
+        verus_args.extend(verus_driver_args_for_package);
 
         extract_inner_args(verus_inner_arg_tag, &mut verus_args, |inner_arg| {
             verus_inner_args.push(inner_arg)
@@ -219,26 +211,25 @@ pub fn main() {
         ]);
 
         {
+            let mut remaining_imports = imports_from_env.clone();
             let mut it = orig_args.iter();
             while let Some(arg) = it.next() {
                 if arg == "--extern" {
                     let pair = it.next().unwrap();
                     let mut split = pair.splitn(2, '=');
                     let key = split.next().unwrap();
-                    if let Some(rmeta_path) = split.next() {
+                    if let Some(i) = remaining_imports.iter().position(|import| import == &key) {
+                        remaining_imports.remove(i);
+                        let rmeta_path = split.next().unwrap();
                         let vir_path = PathBuf::from(rmeta_path).with_extension("vir");
-                        // HACK HACK HACK
-                        if vir_path.exists() {
-                            verus_inner_args.extend([
-                                "--import".to_owned(),
-                                format!("{key}={}", vir_path.display()),
-                            ]);
-                        }
-                    } else {
-                        assert_eq!(key, "proc_macro");
+                        verus_inner_args.extend([
+                            "--import".to_owned(),
+                            format!("{key}={}", vir_path.display()),
+                        ]);
                     }
                 }
             }
+            assert!(remaining_imports.is_empty(), "{:?}", remaining_imports);
         }
 
         if !verify_crate {
@@ -381,6 +372,7 @@ impl ProbeCallbacks {
 
 impl rustc_driver::Callbacks for ProbeCallbacks {
     fn after_crate_root_parsing<'tcx>(
+        // fn after_expansion<'tcx>(
         &mut self,
         _compiler: &rustc_interface::interface::Compiler,
         queries: &'tcx rustc_interface::Queries<'tcx>,
@@ -396,7 +388,10 @@ impl rustc_driver::Callbacks for ProbeCallbacks {
                 .iter()
                 .map(|&crate_num| {
                     let name = tcx.crate_name(crate_num).as_str().to_owned();
-                    let path = tcx.used_crate_source(crate_num).rmeta.as_ref().unwrap().0.clone();
+                    // let path = tcx.used_crate_source(crate_num).rmeta.as_ref().unwrap().0.clone();
+                    // let x = tcx.crate_extern_paths(crate_num);
+                    // eprintln!("{name}: {x:?}");
+                    let path = PathBuf::new();
                     (name, path)
                 })
                 .collect(),
@@ -504,6 +499,30 @@ fn extend_rustc_args_for_keep_ghost(args: &mut Vec<String>) {
     rust_verify::config::enable_default_features_and_verus_attr(args, true, false);
     args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
     args.extend(["--cfg", "verus_keep_ghost_body"].map(ToOwned::to_owned));
+}
+
+fn get_package_id_from_env() -> String {
+    let name = env::var("CARGO_PKG_NAME").unwrap();
+    let version = env::var("CARGO_PKG_VERSION").unwrap();
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+    mk_package_id(name, version, format!("{manifest_dir}/Cargo.toml"))
+}
+
+fn mk_package_id(
+    name: impl AsRef<str>,
+    version: impl AsRef<str>,
+    manifest_path: impl AsRef<str>,
+) -> String {
+    let manifest_path_hash = {
+        let mut hasher = Sha256::new();
+        hasher.update(manifest_path.as_ref().as_bytes());
+        hex::encode(hasher.finalize())
+    };
+    format!("{}-{}-{}", name.as_ref(), version.as_ref(), &manifest_path_hash[..12])
+}
+
+fn unpack_verus_driver_args_for_env(val: &str) -> Vec<String> {
+    val.split("__VERUS_DRIVER_ARGS_SEP__").skip(1).map(ToOwned::to_owned).collect()
 }
 
 #[must_use]
