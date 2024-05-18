@@ -4,6 +4,6 @@ version = "0.1.0"
 license = "MIT"
 edition = "2021"
 
-build = "xxx.rs"
-
 [dependencies]
+bar = { path = "../bar" }
+bson = "=2.10.0"

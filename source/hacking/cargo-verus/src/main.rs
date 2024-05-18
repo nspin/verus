@@ -14,6 +14,7 @@ use std::process::{self, Command};
 
 use cargo_metadata::{Metadata, MetadataCommand};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 fn show_help() {
     println!("{}", help_message());
@@ -107,7 +108,7 @@ impl VerusCmd {
     }
 
     fn into_std_cmd(self) -> Command {
-        let verus_driver_args = pack_verus_driver_args(self.verus_driver_args.iter());
+        let verus_driver_args = pack_verus_driver_args_for_env(self.verus_driver_args.iter());
 
         let mut cmd = Command::new(env::var("CARGO").unwrap_or("cargo".into()));
 
@@ -119,6 +120,9 @@ impl VerusCmd {
         let metadata = self.metadata();
 
         for package in metadata.packages.iter() {
+            let package_id =
+                mk_package_id(&package.name, package.version.to_string(), &package.manifest_path);
+
             let verus_metadata = package
                 .metadata
                 .as_object()
@@ -133,20 +137,29 @@ impl VerusCmd {
                 })
                 .unwrap_or_default();
 
-            if verus_metadata.verify {
-                cmd.env(format!("__VERUS_DRIVER_VERIFY_{}-{}", package.name, package.version), "1");
-            }
-
             let mut verus_driver_args_for_package = vec![];
 
             if verus_metadata.no_vstd {
                 verus_driver_args_for_package.push("--verus-arg=--no-vstd".to_owned());
             }
 
-            cmd.env(
-                format!("__VERUS_DRIVER_ARGS_FOR_{}-{}", package.name, package.version),
-                pack_verus_driver_args(verus_driver_args_for_package.iter()),
-            );
+            if verus_metadata.verify {
+                cmd.env(format!("__VERUS_DRIVER_VERIFY_{package_id}"), "1");
+            }
+
+            if !verus_metadata.imports.is_empty() {
+                let mut it = verus_metadata.imports.iter();
+                let first = it.next().unwrap().clone();
+                let joined = it.fold(first, |a, b| a.clone() + "," + b);
+                cmd.env(format!("__VERUS_DRIVER_IMPORTS_FOR_{package_id}"), joined);
+            }
+
+            if !verus_driver_args_for_package.is_empty() {
+                cmd.env(
+                    format!("__VERUS_DRIVER_ARGS_FOR_{package_id}"),
+                    pack_verus_driver_args_for_env(verus_driver_args_for_package.iter()),
+                );
+            }
         }
 
         cmd
@@ -174,6 +187,8 @@ struct VerusMetadata {
     verify: bool,
     #[serde(rename = "no-vstd", default)]
     no_vstd: bool,
+    #[serde(default)]
+    imports: Vec<String>,
 }
 
 fn filter_args(
@@ -212,7 +227,20 @@ fn filter_args(
     acc
 }
 
-fn pack_verus_driver_args(args: impl Iterator<Item = impl AsRef<str>>) -> String {
+fn mk_package_id(
+    name: impl AsRef<str>,
+    version: impl AsRef<str>,
+    manifest_path: impl AsRef<str>,
+) -> String {
+    let manifest_path_hash = {
+        let mut hasher = Sha256::new();
+        hasher.update(manifest_path.as_ref().as_bytes());
+        hex::encode(hasher.finalize())
+    };
+    format!("{}-{}-{}", name.as_ref(), version.as_ref(), &manifest_path_hash[..12])
+}
+
+fn pack_verus_driver_args_for_env(args: impl Iterator<Item = impl AsRef<str>>) -> String {
     args.map(|arg| ["__VERUS_DRIVER_ARGS_SEP__".to_owned(), arg.as_ref().to_owned()])
         .flatten()
         .collect()

@@ -1,0 +1,8 @@
+[package]
+name = "bar"
+version = "0.1.0"
+license = "MIT"
+edition = "2021"
+
+[dependencies]
+bson = { git = "https://github.com/mongodb/bson-rust.git", tag = "v2.10.0" }
