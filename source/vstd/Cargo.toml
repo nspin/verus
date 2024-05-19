@@ -23,4 +23,4 @@ alloc = []
 
 [package.metadata.verus]
 verify = true
-no-vstd = true
+is-vstd = true

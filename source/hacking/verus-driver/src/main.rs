@@ -209,7 +209,11 @@ pub fn main() {
 
         // TODO unecessary deps are tracked in this case, which will cause unecessary rebuilds
         if !verify_crate {
-            extend_rustc_args_for_excluded(&mut rustc_args);
+            if parsed_verus_driver_inner_args.is_builtin
+                || parsed_verus_driver_inner_args.is_builtin_macros
+            {
+                extend_rustc_args_for_builtin_and_builtin_macros(&mut rustc_args);
+            }
             return rustc_driver::RunCompiler::new(
                 &rustc_args,
                 &mut VerusCallbacksWrapper::new(dep_tracker.clone(), DefaultCallbacks),
@@ -222,8 +226,8 @@ pub fn main() {
 
         let verifier = Verifier::new(parsed_verus_inner_args);
 
-        let mut rustc_args_for_keep_ghost = rustc_args.clone();
-        extend_rustc_args_for_keep_ghost(&mut rustc_args_for_keep_ghost);
+        let mut rustc_args_for_verify = rustc_args.clone();
+        extend_rustc_args_for_verify(&mut rustc_args_for_verify);
 
         let mut verifier_callbacks = VerusCallbacksWrapper::new(
             dep_tracker.clone(),
@@ -233,13 +237,13 @@ pub fn main() {
                 rust_end_time: None,
                 lifetime_start_time: None,
                 lifetime_end_time: None,
-                rustc_args: rustc_args_for_keep_ghost.clone(),
+                rustc_args: rustc_args_for_verify.clone(),
                 file_loader: Some(Box::new(mk_file_loader())),
             },
         );
 
         let status =
-            rustc_driver::RunCompiler::new(&rustc_args_for_keep_ghost, &mut verifier_callbacks)
+            rustc_driver::RunCompiler::new(&rustc_args_for_verify, &mut verifier_callbacks)
                 .set_using_internal_features(using_internal_features.clone())
                 .run();
 
@@ -267,11 +271,11 @@ pub fn main() {
         let compile_status = if !verifier.args.compile && verifier.args.no_lifetime {
             Ok(())
         } else {
-            let mut rustc_args_for_erase_ghost = rustc_args.clone();
-            extend_rustc_args_for_erase_ghost(&mut rustc_args_for_erase_ghost);
+            let mut rustc_args_for_compile = rustc_args.clone();
+            extend_rustc_args_for_compile(&mut rustc_args_for_compile);
             let do_compile = verifier.args.compile;
             rustc_driver::RunCompiler::new(
-                &rustc_args_for_erase_ghost,
+                &rustc_args_for_compile,
                 &mut VerusCallbacksWrapper::new(
                     dep_tracker.clone(),
                     CompilerCallbacksEraseMacro { do_compile },
@@ -324,6 +328,10 @@ struct VerusDriverInnerArgs {
     compile_when_not_primary_package: bool,
     #[arg(long)]
     skip_verification: bool,
+    #[arg(long)]
+    is_builtin: bool,
+    #[arg(long)]
+    is_builtin_macros: bool,
     #[arg(long)]
     find_import: Vec<String>,
 }
@@ -480,11 +488,11 @@ impl<T: rustc_driver::Callbacks> rustc_driver::Callbacks for VerusCallbacksWrapp
     }
 }
 
-fn extend_rustc_args_for_excluded(args: &mut Vec<String>) {
+fn extend_rustc_args_for_builtin_and_builtin_macros(args: &mut Vec<String>) {
     args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
 }
 
-fn extend_rustc_args_for_erase_ghost(args: &mut Vec<String>) {
+fn extend_rustc_args_for_compile(args: &mut Vec<String>) {
     rust_verify::config::enable_default_features_and_verus_attr(args, true, true);
     let allow = &[
         "unused_imports",
@@ -505,7 +513,7 @@ fn extend_rustc_args_for_erase_ghost(args: &mut Vec<String>) {
     args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
 }
 
-fn extend_rustc_args_for_keep_ghost(args: &mut Vec<String>) {
+fn extend_rustc_args_for_verify(args: &mut Vec<String>) {
     rust_verify::config::enable_default_features_and_verus_attr(args, true, false);
     args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
     args.extend(["--cfg", "verus_keep_ghost_body"].map(ToOwned::to_owned));
