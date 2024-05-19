@@ -48,24 +48,43 @@ pub fn main() {
 }
 
 struct VerusCmd {
-    cargo_subcommand: &'static str,
+    cargo_subcommand: CargoSubcommand,
     cargo_args: Vec<String>,
-    verus_driver_args: Vec<String>,
+    common_verus_driver_args: Vec<String>,
+}
+
+enum CargoSubcommand {
+    Build,
+    Check,
+}
+
+impl CargoSubcommand {
+    fn to_arg(&self) -> &str {
+        match self {
+            Self::Build => "build",
+            Self::Check => "check",
+        }
+    }
 }
 
 impl VerusCmd {
     fn new(args: &[String]) -> Self {
-        let mut cargo_subcommand = "check";
+        let mut cargo_subcommand = CargoSubcommand::Build;
         let mut cargo_args = vec![];
-        let mut verus_driver_args: Vec<String> = vec![];
+        let mut common_verus_driver_args: Vec<String> = vec![];
+
+        let mut just_verify = false;
 
         let mut args_iter = args.iter();
 
         while let Some(arg) = args_iter.next() {
             match arg.as_str() {
-                "--compile" => {
-                    cargo_subcommand = "build";
-                    verus_driver_args.push("--verus-arg=--compile".to_owned());
+                "--check" => {
+                    cargo_subcommand = CargoSubcommand::Check;
+                    continue;
+                }
+                "--just-verify" => {
+                    just_verify = true;
                     continue;
                 }
                 "--" => break,
@@ -75,9 +94,17 @@ impl VerusCmd {
             cargo_args.push(arg.clone());
         }
 
-        verus_driver_args.extend(args_iter.cloned());
+        common_verus_driver_args
+            .push("--verus-driver-arg=--compile-when-not-primary-package".to_owned());
 
-        Self { cargo_subcommand, cargo_args, verus_driver_args }
+        if !just_verify {
+            common_verus_driver_args
+                .push("--verus-driver-arg=--compile-when-primary-package".to_owned());
+        }
+
+        common_verus_driver_args.extend(args_iter.cloned());
+
+        Self { cargo_subcommand, cargo_args, common_verus_driver_args }
     }
 
     fn metadata(&self) -> Metadata {
@@ -108,34 +135,18 @@ impl VerusCmd {
     }
 
     fn into_std_cmd(self) -> Command {
-        let verus_driver_args = pack_verus_driver_args_for_env(self.verus_driver_args.iter());
+        let common_verus_driver_args =
+            pack_verus_driver_args_for_env(self.common_verus_driver_args.iter());
 
         let mut cmd = Command::new(env::var("CARGO").unwrap_or("cargo".into()));
 
         cmd.env("RUSTC_WRAPPER", Self::verus_driver_path())
-            .env("__VERUS_DRIVER_ARGS__", verus_driver_args)
-            .arg(self.cargo_subcommand)
+            .env("__VERUS_DRIVER_ARGS__", common_verus_driver_args)
+            .arg(self.cargo_subcommand.to_arg().to_owned())
             .args(&self.cargo_args);
 
-        let metadata = self.metadata();
-
-        for package in metadata.packages.iter() {
-            let package_id =
-                mk_package_id(&package.name, package.version.to_string(), &package.manifest_path);
-
-            let verus_metadata = package
-                .metadata
-                .as_object()
-                .and_then(|obj| obj.get("verus"))
-                .map(|v| {
-                    serde_json::from_value::<VerusMetadata>(v.clone()).unwrap_or_else(|err| {
-                        panic!(
-                            "failed to parse {}-{}.metadata.verus: {}",
-                            package.name, package.version, err
-                        )
-                    })
-                })
-                .unwrap_or_default();
+        for package in self.metadata().packages.iter() {
+            let verus_metadata = get_verus_metadata(package);
 
             let mut verus_driver_args_for_package = vec![];
 
@@ -143,16 +154,18 @@ impl VerusCmd {
                 verus_driver_args_for_package.push("--verus-arg=--no-vstd".to_owned());
             }
 
-            if verus_metadata.verify {
-                cmd.env(format!("__VERUS_DRIVER_VERIFY_{package_id}"), "1");
+            if !verus_metadata.verify {
+                verus_driver_args_for_package
+                    .push("--verus-driver-arg=--skip-verification".to_owned());
             }
 
-            if !verus_metadata.imports.is_empty() {
-                let mut it = verus_metadata.imports.iter();
-                let first = it.next().unwrap().clone();
-                let joined = it.fold(first, |a, b| a.clone() + "," + b);
-                cmd.env(format!("__VERUS_DRIVER_IMPORTS_FOR_{package_id}"), joined);
+            for import in verus_metadata.imports.iter() {
+                verus_driver_args_for_package
+                    .push(format!("--verus-driver-arg=--find-import={import}"));
             }
+
+            let package_id =
+                mk_package_id(&package.name, package.version.to_string(), &package.manifest_path);
 
             if !verus_driver_args_for_package.is_empty() {
                 cmd.env(
@@ -179,16 +192,6 @@ fn process(args: &[String]) -> Result<(), i32> {
     } else {
         Err(exit_status.code().unwrap_or(-1))
     }
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct VerusMetadata {
-    #[serde(default)]
-    verify: bool,
-    #[serde(rename = "no-vstd", default)]
-    no_vstd: bool,
-    #[serde(default)]
-    imports: Vec<String>,
 }
 
 fn filter_args(
@@ -227,6 +230,32 @@ fn filter_args(
     acc
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct VerusMetadata {
+    #[serde(default)]
+    verify: bool,
+    #[serde(rename = "no-vstd", default)]
+    no_vstd: bool,
+    #[serde(default)]
+    imports: Vec<String>,
+}
+
+fn get_verus_metadata(package: &cargo_metadata::Package) -> VerusMetadata {
+    package
+        .metadata
+        .as_object()
+        .and_then(|obj| obj.get("verus"))
+        .map(|v| {
+            serde_json::from_value::<VerusMetadata>(v.clone()).unwrap_or_else(|err| {
+                panic!(
+                    "failed to parse {}-{}.metadata.verus: {}",
+                    package.name, package.version, err
+                )
+            })
+        })
+        .unwrap_or_default()
+}
+
 fn mk_package_id(
     name: impl AsRef<str>,
     version: impl AsRef<str>,
@@ -253,8 +282,9 @@ pub fn help_message() -> &'static str {
 Usage:
     cargo verus [OPTIONS] [--] [<ARGS>...]
 
-OPTIONS are passed to 'cargo check' (default) or 'cargo build' (when --compile is specified), except the following, which are handled specially:
-    --compile                Selects the 'cargo build' subcommand and passes --verus-arg=--compile to 'verus-driver'
+OPTIONS are passed to 'cargo build' (default) or 'cargo check' (when --check is specified), except the following, which are handled specially:
+    --check                  Selects the 'cargo check' subcommand
+    --just-verify            Skip compilation for primary package(s)
     -h, --help               Print this message
     -V, --version            Print version info and exit
 
