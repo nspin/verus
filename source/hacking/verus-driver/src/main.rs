@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::time::Instant;
 
+use clap::Parser;
 use sha2::{Digest, Sha256};
 
 use rustc_interface::interface;
@@ -157,49 +158,58 @@ pub fn main() {
 
         let package_id = get_package_id_from_env();
 
-        let cargo_crate_name = env::var("CARGO_CRATE_NAME").unwrap();
+        let mut all_args = orig_args.clone();
 
-        let is_build_script = cargo_crate_name.starts_with("build_script");
+        let verus_args_var = None; // TODO
 
-        let verus_driver_args_for_package = unpack_verus_driver_args_for_env(
-            &env::var(format!("__VERUS_DRIVER_ARGS_FOR_{package_id}",)).unwrap_or_default(),
-        );
+        all_args.extend(unpack_verus_driver_args_for_env(
+            &env::var("__VERUS_DRIVER_ARGS__").unwrap_or_default(),
+        ));
+        all_args.extend(unpack_verus_driver_args_for_env(
+            &env::var(format!("__VERUS_DRIVER_ARGS_FOR_{package_id}")).unwrap_or_default(),
+        ));
 
-        let verify_package =
-            env::var(format!("__VERUS_DRIVER_VERIFY_{package_id}")).unwrap_or_default() == "1";
-
-        let verify_crate = verify_package && !is_build_script;
-
-        let imports_from_env_val =
-            env::var(format!("__VERUS_DRIVER_IMPORTS_FOR_{package_id}")).unwrap_or_default();
-        let imports_from_env = if imports_from_env_val.is_empty() {
-            vec![]
-        } else {
-            imports_from_env_val.split(",").collect::<Vec<_>>()
-        };
+        let mut verus_driver_inner_args = vec![];
+        extract_inner_args("--verus-driver-arg", &mut all_args, |inner_arg| {
+            verus_driver_inner_args.push(inner_arg)
+        });
 
         let mut verus_inner_args = vec![];
-
-        let verus_inner_arg_tag = "--verus-arg";
-
-        extract_inner_args(verus_inner_arg_tag, &mut orig_args, |inner_arg| {
+        extract_inner_args("--verus-arg", &mut all_args, |inner_arg| {
             verus_inner_args.push(inner_arg)
         });
 
-        let verus_args_var = env::var("__VERUS_DRIVER_ARGS__").ok();
-        let mut verus_args = unpack_verus_driver_args_for_env(verus_args_var.as_deref().unwrap());
+        let mut rustc_args = all_args;
 
-        verus_args.extend(verus_driver_args_for_package);
+        let parsed_verus_driver_inner_args =
+            VerusDriverInnerArgs::try_parse_from(&verus_driver_inner_args).unwrap_or_else(|err| {
+                panic!(
+                "failed to parse verus driver inner args from {verus_driver_inner_args:?}: {err}"
+            )
+            });
 
-        extract_inner_args(verus_inner_arg_tag, &mut verus_args, |inner_arg| {
-            verus_inner_args.push(inner_arg)
-        });
+        let cargo_crate_name = env::var("CARGO_CRATE_NAME").unwrap();
+
+        let is_build_script = cargo_crate_name.starts_with("build_script_");
+
+        let verify_crate = !parsed_verus_driver_inner_args.skip_verification && !is_build_script;
+
+        let is_primary_package = env::var_os("CARGO_PRIMARY_PACKAGE").is_some();
+
+        let compile = if is_primary_package {
+            parsed_verus_driver_inner_args.compile_when_primary_package
+        } else {
+            parsed_verus_driver_inner_args.compile_when_primary_package
+        };
+
+        if compile {
+            verus_inner_args.push("--compile".to_owned());
+        }
 
         let probe = {
             let mut callbacks = ProbeCallbacks::new();
-            let status = rustc_driver::RunCompiler::new(&orig_args, &mut callbacks).run();
-            // TODO proper error message
-            assert!(status.is_ok(), "{:?}", status);
+            let status = rustc_driver::RunCompiler::new(&rustc_args, &mut callbacks).run();
+            assert!(status.is_ok(), "{:?}", status); // TODO
             callbacks.completed.unwrap()
         };
 
@@ -211,7 +221,7 @@ pub fn main() {
         ]);
 
         {
-            let mut remaining_imports = imports_from_env.clone();
+            let mut remaining_imports = parsed_verus_driver_inner_args.find_import.clone();
             let mut it = orig_args.iter();
             while let Some(arg) = it.next() {
                 if arg == "--extern" {
@@ -233,16 +243,14 @@ pub fn main() {
         }
 
         if !verify_crate {
-            extend_rustc_args_for_excluded(&mut orig_args);
+            extend_rustc_args_for_excluded(&mut rustc_args);
             return rustc_driver::RunCompiler::new(
-                &orig_args,
+                &rustc_args,
                 &mut RustcCallbacks { verus_args_var: verus_args_var.clone() },
             )
             .set_using_internal_features(using_internal_features.clone())
             .run();
         }
-
-        orig_args.extend(verus_args);
 
         let program_name_for_config = "TODO";
 
@@ -262,7 +270,7 @@ pub fn main() {
 
         let verifier = Verifier::new(parsed_verus_inner_args);
 
-        let mut rustc_args_for_keep_ghost = orig_args.clone();
+        let mut rustc_args_for_keep_ghost = rustc_args.clone();
         extend_rustc_args_for_keep_ghost(&mut rustc_args_for_keep_ghost);
 
         let mut verifier_callbacks = VerusCallbacksWrapper::new(
@@ -309,7 +317,7 @@ pub fn main() {
         let compile_status = if !verifier.args.compile && verifier.args.no_lifetime {
             Ok(())
         } else {
-            let mut rustc_args_for_erase_ghost = orig_args.clone();
+            let mut rustc_args_for_erase_ghost = rustc_args.clone();
             extend_rustc_args_for_erase_ghost(&mut rustc_args_for_erase_ghost);
             let do_compile = verifier.args.compile;
             rustc_driver::RunCompiler::new(
@@ -330,6 +338,18 @@ pub fn main() {
 
         compile_status
     }))
+}
+
+#[derive(Debug, Parser)]
+struct VerusDriverInnerArgs {
+    #[arg(long)]
+    compile_when_primary_package: bool,
+    #[arg(long)]
+    compile_when_not_primary_package: bool,
+    #[arg(long)]
+    skip_verification: bool,
+    #[arg(long)]
+    find_import: Vec<String>,
 }
 
 struct DefaultCallbacks;
