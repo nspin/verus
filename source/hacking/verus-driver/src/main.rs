@@ -423,9 +423,7 @@ impl rustc_driver::Callbacks for RustcCallbacks {
 #[derive(Debug)]
 struct ProbeCompleted {
     crate_name: String,
-    crate_types: Vec<rustc_session::config::CrateType>,
     crate_meta_path: PathBuf,
-    extern_crate_meta_paths: BTreeMap<String, PathBuf>,
 }
 
 struct ProbeCallbacks {
@@ -440,29 +438,15 @@ impl ProbeCallbacks {
 
 impl rustc_driver::Callbacks for ProbeCallbacks {
     fn after_crate_root_parsing<'tcx>(
-        // fn after_expansion<'tcx>(
         &mut self,
         _compiler: &rustc_interface::interface::Compiler,
         queries: &'tcx rustc_interface::Queries<'tcx>,
     ) -> rustc_driver::Compilation {
         let completed = queries.global_ctxt().unwrap().enter(|tcx| ProbeCompleted {
             crate_name: tcx.crate_name(rustc_span::def_id::LOCAL_CRATE).as_str().to_owned(),
-            crate_types: tcx.crate_types().to_vec(),
             crate_meta_path: tcx
                 .output_filenames(())
                 .output_path(rustc_session::config::OutputType::Metadata),
-            extern_crate_meta_paths: tcx
-                .crates(())
-                .iter()
-                .map(|&crate_num| {
-                    let name = tcx.crate_name(crate_num).as_str().to_owned();
-                    // let path = tcx.used_crate_source(crate_num).rmeta.as_ref().unwrap().0.clone();
-                    // let x = tcx.crate_extern_paths(crate_num);
-                    // eprintln!("{name}: {x:?}");
-                    let path = PathBuf::new();
-                    (name, path)
-                })
-                .collect(),
         });
         self.completed.replace(completed);
         rustc_driver::Compilation::Stop
