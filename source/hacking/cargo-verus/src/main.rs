@@ -16,15 +16,6 @@ use cargo_metadata::{Metadata, MetadataCommand};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-fn show_help() {
-    println!("{}", help_message());
-}
-
-fn show_version() {
-    let version_info = rustc_tools_util::get_version_info!();
-    println!("{version_info}");
-}
-
 pub fn main() {
     // Choose offset into args according to whether we are being run as `cargo-verus` or `cargo verus`.
     // (See https://doc.rust-lang.org/cargo/reference/external-tools.html#custom-subcommands)
@@ -45,6 +36,15 @@ pub fn main() {
     if let Err(code) = process(&args) {
         process::exit(code);
     }
+}
+
+fn show_help() {
+    println!("{}", help_message());
+}
+
+fn show_version() {
+    let version_info = rustc_tools_util::get_version_info!();
+    println!("{version_info}");
 }
 
 struct VerusCmd {

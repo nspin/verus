@@ -13,71 +13,17 @@ use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::time::Instant;
 
-use clap::Parser;
-use sha2::{Digest, Sha256};
-
 use rustc_interface::interface;
 use rustc_session::config::ErrorOutputType;
 use rustc_session::parse::ParseSess;
 use rustc_session::EarlyDiagCtxt;
 use rustc_span::symbol::Symbol;
 
+use clap::Parser;
+use sha2::{Digest, Sha256};
+
 use rust_verify::driver::is_verifying_entire_crate;
 use rust_verify::verifier::{Verifier, VerifierCallbacksEraseMacro};
-
-fn extract_inner_args(
-    tag: &str,
-    args: &mut Vec<String>,
-    mut consume_inner_arg: impl FnMut(String),
-) {
-    let mut new = vec![];
-
-    {
-        let mut drain = args.drain(..);
-        while let Some(arg) = drain.next() {
-            let mut split = arg.splitn(2, '=');
-            if split.next() == Some(tag) {
-                if let Some(inner_arg) =
-                    split.next().map(ToOwned::to_owned).or_else(|| drain.next())
-                {
-                    consume_inner_arg(inner_arg);
-                }
-            } else {
-                new.push(arg);
-            }
-        }
-    }
-
-    mem::swap(args, &mut new);
-}
-
-// TODO more
-fn track_verus_args(psess: &mut ParseSess, args_env_var: &Option<String>) {
-    psess.env_depinfo.get_mut().insert((
-        Symbol::intern("__VERUS_DRIVER_ARGS__"),
-        args_env_var.as_deref().map(Symbol::intern),
-    ));
-}
-
-/// Track files that may be accessed at runtime in `file_depinfo` so that cargo will re-run verus
-/// when any of them are modified
-fn track_files(psess: &mut ParseSess) {
-    let file_depinfo = psess.file_depinfo.get_mut();
-
-    // During development track the `verus-driver` executable so that cargo will re-run verus whenever
-    // it is rebuilt
-    if cfg!(debug_assertions) {
-        if let Ok(current_exe) = env::current_exe() {
-            if let Some(current_exe) = current_exe.to_str() {
-                file_depinfo.insert(Symbol::intern(current_exe));
-            }
-        }
-    }
-}
-
-fn display_help() {
-    println!("{}", help_message());
-}
 
 const BUG_REPORT_URL: &str = "https://github.com/verus-lang/verus/issues/new";
 
@@ -99,14 +45,7 @@ pub fn main() {
     };
 
     exit(rustc_driver::catch_with_exit_code(move || {
-        let mut orig_args = env::args_os()
-            .enumerate()
-            .map(|(i, arg)| {
-                arg.into_string().unwrap_or_else(|arg| {
-                    early_dcx.early_error(format!("argument {i} is not valid Unicode: {arg:?}"))
-                })
-            })
-            .collect::<Vec<_>>();
+        let mut orig_args = env::args().collect::<Vec<_>>();
 
         if orig_args.get(1).map(String::as_str) == Some(rust_verify::lifetime::LIFETIME_DRIVER_ARG)
         {
@@ -340,6 +279,10 @@ pub fn main() {
     }))
 }
 
+fn display_help() {
+    println!("{}", help_message());
+}
+
 #[derive(Debug, Parser)]
 struct VerusDriverInnerArgs {
     #[arg(long)]
@@ -350,6 +293,111 @@ struct VerusDriverInnerArgs {
     skip_verification: bool,
     #[arg(long)]
     find_import: Vec<String>,
+}
+
+fn get_package_id_from_env() -> String {
+    let name = env::var("CARGO_PKG_NAME").unwrap();
+    let version = env::var("CARGO_PKG_VERSION").unwrap();
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+    mk_package_id(name, version, format!("{manifest_dir}/Cargo.toml"))
+}
+
+fn mk_package_id(
+    name: impl AsRef<str>,
+    version: impl AsRef<str>,
+    manifest_path: impl AsRef<str>,
+) -> String {
+    let manifest_path_hash = {
+        let mut hasher = Sha256::new();
+        hasher.update(manifest_path.as_ref().as_bytes());
+        hex::encode(hasher.finalize())
+    };
+    format!("{}-{}-{}", name.as_ref(), version.as_ref(), &manifest_path_hash[..12])
+}
+
+fn unpack_verus_driver_args_for_env(val: &str) -> Vec<String> {
+    val.split("__VERUS_DRIVER_ARGS_SEP__").skip(1).map(ToOwned::to_owned).collect()
+}
+
+fn extract_inner_args(
+    tag: &str,
+    args: &mut Vec<String>,
+    mut consume_inner_arg: impl FnMut(String),
+) {
+    let mut new = vec![];
+
+    {
+        let mut drain = args.drain(..);
+        while let Some(arg) = drain.next() {
+            let mut split = arg.splitn(2, '=');
+            if split.next() == Some(tag) {
+                if let Some(inner_arg) =
+                    split.next().map(ToOwned::to_owned).or_else(|| drain.next())
+                {
+                    consume_inner_arg(inner_arg);
+                }
+            } else {
+                new.push(arg);
+            }
+        }
+    }
+
+    mem::swap(args, &mut new);
+}
+
+// TODO more
+fn track_verus_args(psess: &mut ParseSess, args_env_var: &Option<String>) {
+    psess.env_depinfo.get_mut().insert((
+        Symbol::intern("__VERUS_DRIVER_ARGS__"),
+        args_env_var.as_deref().map(Symbol::intern),
+    ));
+}
+
+/// Track files that may be accessed at runtime in `file_depinfo` so that cargo will re-run verus
+/// when any of them are modified
+fn track_files(psess: &mut ParseSess) {
+    let file_depinfo = psess.file_depinfo.get_mut();
+
+    // During development track the `verus-driver` executable so that cargo will re-run verus whenever
+    // it is rebuilt
+    if cfg!(debug_assertions) {
+        if let Ok(current_exe) = env::current_exe() {
+            if let Some(current_exe) = current_exe.to_str() {
+                file_depinfo.insert(Symbol::intern(current_exe));
+            }
+        }
+    }
+}
+
+fn extend_rustc_args_for_excluded(args: &mut Vec<String>) {
+    args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
+}
+
+fn extend_rustc_args_for_erase_ghost(args: &mut Vec<String>) {
+    rust_verify::config::enable_default_features_and_verus_attr(args, true, true);
+    let allow = &[
+        "unused_imports",
+        "unused_variables",
+        "unused_assignments",
+        "unreachable_patterns",
+        "unused_parens",
+        "unused_braces",
+        "dead_code",
+        "unreachable_code",
+        "unused_mut",
+        "unused_labels",
+        "unused_attributes",
+    ];
+    for a in allow {
+        args.extend(["-A", a].map(ToOwned::to_owned));
+    }
+    args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
+}
+
+fn extend_rustc_args_for_keep_ghost(args: &mut Vec<String>) {
+    rust_verify::config::enable_default_features_and_verus_attr(args, true, false);
+    args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
+    args.extend(["--cfg", "verus_keep_ghost_body"].map(ToOwned::to_owned));
 }
 
 struct DefaultCallbacks;
@@ -488,61 +536,6 @@ impl rustc_driver::Callbacks for CompilerCallbacksEraseMacro {
             rustc_driver::Compilation::Continue
         }
     }
-}
-
-fn extend_rustc_args_for_excluded(args: &mut Vec<String>) {
-    args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
-}
-
-fn extend_rustc_args_for_erase_ghost(args: &mut Vec<String>) {
-    rust_verify::config::enable_default_features_and_verus_attr(args, true, true);
-    let allow = &[
-        "unused_imports",
-        "unused_variables",
-        "unused_assignments",
-        "unreachable_patterns",
-        "unused_parens",
-        "unused_braces",
-        "dead_code",
-        "unreachable_code",
-        "unused_mut",
-        "unused_labels",
-        "unused_attributes",
-    ];
-    for a in allow {
-        args.extend(["-A", a].map(ToOwned::to_owned));
-    }
-    args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
-}
-
-fn extend_rustc_args_for_keep_ghost(args: &mut Vec<String>) {
-    rust_verify::config::enable_default_features_and_verus_attr(args, true, false);
-    args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
-    args.extend(["--cfg", "verus_keep_ghost_body"].map(ToOwned::to_owned));
-}
-
-fn get_package_id_from_env() -> String {
-    let name = env::var("CARGO_PKG_NAME").unwrap();
-    let version = env::var("CARGO_PKG_VERSION").unwrap();
-    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
-    mk_package_id(name, version, format!("{manifest_dir}/Cargo.toml"))
-}
-
-fn mk_package_id(
-    name: impl AsRef<str>,
-    version: impl AsRef<str>,
-    manifest_path: impl AsRef<str>,
-) -> String {
-    let manifest_path_hash = {
-        let mut hasher = Sha256::new();
-        hasher.update(manifest_path.as_ref().as_bytes());
-        hex::encode(hasher.finalize())
-    };
-    format!("{}-{}-{}", name.as_ref(), version.as_ref(), &manifest_path_hash[..12])
-}
-
-fn unpack_verus_driver_args_for_env(val: &str) -> Vec<String> {
-    val.split("__VERUS_DRIVER_ARGS_SEP__").skip(1).map(ToOwned::to_owned).collect()
 }
 
 #[must_use]
