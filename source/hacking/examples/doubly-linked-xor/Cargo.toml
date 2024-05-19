@@ -11,3 +11,4 @@ builtin_macros = { path = "../../../builtin_macros" }
 
 [package.metadata.verus]
 verify = true
+imports = ["vstd"]

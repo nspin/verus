@@ -5,24 +5,24 @@ extern crate rustc_interface;
 extern crate rustc_session;
 extern crate rustc_span;
 
-use std::collections::BTreeMap;
-use std::env;
+use std::collections::{BTreeMap, BTreeSet};
+use std::env::{self, VarError};
 use std::io::Read;
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::process::exit;
+use std::sync::Arc;
 use std::time::Instant;
 
 use rustc_interface::interface;
 use rustc_session::config::ErrorOutputType;
-use rustc_session::parse::ParseSess;
 use rustc_session::EarlyDiagCtxt;
 use rustc_span::symbol::Symbol;
 
 use clap::Parser;
 use sha2::{Digest, Sha256};
 
-use rust_verify::driver::is_verifying_entire_crate;
+use rust_verify::driver::{is_verifying_entire_crate, CompilerCallbacksEraseMacro};
 use rust_verify::verifier::{Verifier, VerifierCallbacksEraseMacro};
 
 const BUG_REPORT_URL: &str = "https://github.com/verus-lang/verus/issues/new";
@@ -95,18 +95,28 @@ pub fn main() {
             return rustc_driver::RunCompiler::new(&orig_args, &mut DefaultCallbacks).run();
         }
 
-        let package_id = get_package_id_from_env();
+        let mut dep_tracker = DepTracker::default();
+
+        // During development track the `verus-driver` executable so that cargo will re-run verus
+        // whenever it is rebuilt
+        if cfg!(debug_assertions) {
+            if let Ok(current_exe) = env::current_exe() {
+                // TODO ignore in cases where current_exe is not valid unicode
+                dep_tracker.mark_file(current_exe);
+            }
+        }
 
         let mut all_args = orig_args.clone();
 
-        let verus_args_var = None; // TODO
-
-        all_args.extend(unpack_verus_driver_args_for_env(
-            &env::var("__VERUS_DRIVER_ARGS__").unwrap_or_default(),
-        ));
-        all_args.extend(unpack_verus_driver_args_for_env(
-            &env::var(format!("__VERUS_DRIVER_ARGS_FOR_{package_id}")).unwrap_or_default(),
-        ));
+        if let Some(package_id) = get_package_id_from_env(&mut dep_tracker) {
+            if let Some(val) = dep_tracker.get_env("__VERUS_DRIVER_ARGS__") {
+                all_args.extend(unpack_verus_driver_args_for_env(&val));
+            }
+            if let Some(val) = dep_tracker.get_env(&format!("__VERUS_DRIVER_ARGS_FOR_{package_id}"))
+            {
+                all_args.extend(unpack_verus_driver_args_for_env(&val));
+            }
+        }
 
         let mut verus_driver_inner_args = vec![];
         extract_inner_args("--verus-driver-arg", &mut all_args, |inner_arg| {
@@ -127,13 +137,14 @@ pub fn main() {
             )
             });
 
-        let cargo_crate_name = env::var("CARGO_CRATE_NAME").unwrap();
-
-        let is_build_script = cargo_crate_name.starts_with("build_script_");
+        let is_build_script = dep_tracker
+            .get_env("CARGO_CRATE_NAME")
+            .map(|name| name.starts_with("build_script_"))
+            .unwrap_or(false);
 
         let verify_crate = !parsed_verus_driver_inner_args.skip_verification && !is_build_script;
 
-        let is_primary_package = env::var_os("CARGO_PRIMARY_PACKAGE").is_some();
+        let is_primary_package = dep_tracker.get_env("CARGO_PRIMARY_PACKAGE").is_some();
 
         let compile = if is_primary_package {
             parsed_verus_driver_inner_args.compile_when_primary_package
@@ -151,8 +162,6 @@ pub fn main() {
             assert!(status.is_ok(), "{:?}", status); // TODO
             callbacks.completed.unwrap()
         };
-
-        // eprintln!("XXX {:?}", probe);
 
         verus_inner_args.extend([
             "--export".to_owned(),
@@ -175,20 +184,11 @@ pub fn main() {
                             "--import".to_owned(),
                             format!("{key}={}", vir_path.display()),
                         ]);
+                        dep_tracker.mark_file(vir_path);
                     }
                 }
             }
             assert!(remaining_imports.is_empty(), "{:?}", remaining_imports);
-        }
-
-        if !verify_crate {
-            extend_rustc_args_for_excluded(&mut rustc_args);
-            return rustc_driver::RunCompiler::new(
-                &rustc_args,
-                &mut RustcCallbacks { verus_args_var: verus_args_var.clone() },
-            )
-            .set_using_internal_features(using_internal_features.clone())
-            .run();
         }
 
         let program_name_for_config = "TODO";
@@ -205,6 +205,19 @@ pub fn main() {
         // HACK
         assert!(!parsed_verus_inner_args.version);
 
+        let dep_tracker = Arc::new(dep_tracker);
+
+        // TODO unecessary deps are tracked in this case, which will cause unecessary rebuilds
+        if !verify_crate {
+            extend_rustc_args_for_excluded(&mut rustc_args);
+            return rustc_driver::RunCompiler::new(
+                &rustc_args,
+                &mut VerusCallbacksWrapper::new(dep_tracker.clone(), DefaultCallbacks),
+            )
+            .set_using_internal_features(using_internal_features.clone())
+            .run();
+        }
+
         let mk_file_loader = || rust_verify::file_loader::RealFileLoader;
 
         let verifier = Verifier::new(parsed_verus_inner_args);
@@ -213,7 +226,7 @@ pub fn main() {
         extend_rustc_args_for_keep_ghost(&mut rustc_args_for_keep_ghost);
 
         let mut verifier_callbacks = VerusCallbacksWrapper::new(
-            verus_args_var.clone(),
+            dep_tracker.clone(),
             VerifierCallbacksEraseMacro {
                 verifier,
                 rust_start_time: Instant::now(),
@@ -233,16 +246,14 @@ pub fn main() {
         let VerifierCallbacksEraseMacro { verifier, .. } = verifier_callbacks.unwrap();
 
         if !verifier.args.output_json && !verifier.encountered_vir_error {
-            eprintln!(
-                "verification results:: {} verified, {} errors{}",
-                verifier.count_verified,
-                verifier.count_errors,
-                if !is_verifying_entire_crate(&verifier) {
-                    " (partial verification with `--verify-*`)"
-                } else {
-                    ""
-                }
+            eprint!(
+                "verification results:: {} verified, {} errors",
+                verifier.count_verified, verifier.count_errors,
             );
+            if !is_verifying_entire_crate(&verifier) {
+                eprint!(" (partial verification with `--verify-*`)");
+            }
+            eprintln!();
         }
 
         if status.is_err() || verifier.encountered_vir_error {
@@ -262,7 +273,7 @@ pub fn main() {
             rustc_driver::RunCompiler::new(
                 &rustc_args_for_erase_ghost,
                 &mut VerusCallbacksWrapper::new(
-                    verus_args_var.clone(),
+                    dep_tracker.clone(),
                     CompilerCallbacksEraseMacro { do_compile },
                 ),
             )
@@ -283,6 +294,28 @@ fn display_help() {
     println!("{}", help_message());
 }
 
+#[derive(Debug, Default)]
+struct DepTracker {
+    env: BTreeMap<String, Option<String>>,
+    files: BTreeSet<PathBuf>,
+}
+
+impl DepTracker {
+    fn get_env(&mut self, var: &str) -> Option<String> {
+        let val = match env::var(var) {
+            Ok(s) => Some(s),
+            Err(VarError::NotPresent) => None,
+            Err(VarError::NotUnicode(_)) => panic!(), // TODO
+        };
+        self.env.insert(var.to_owned(), val.clone());
+        val
+    }
+
+    fn mark_file(&mut self, path: PathBuf) {
+        self.files.insert(path);
+    }
+}
+
 #[derive(Debug, Parser)]
 struct VerusDriverInnerArgs {
     #[arg(long)]
@@ -295,11 +328,17 @@ struct VerusDriverInnerArgs {
     find_import: Vec<String>,
 }
 
-fn get_package_id_from_env() -> String {
-    let name = env::var("CARGO_PKG_NAME").unwrap();
-    let version = env::var("CARGO_PKG_VERSION").unwrap();
-    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
-    mk_package_id(name, version, format!("{manifest_dir}/Cargo.toml"))
+fn get_package_id_from_env(dep_tracker: &mut DepTracker) -> Option<String> {
+    match (
+        dep_tracker.get_env("CARGO_PKG_NAME"),
+        dep_tracker.get_env("CARGO_PKG_VERSION"),
+        dep_tracker.get_env("CARGO_MANIFEST_DIR"),
+    ) {
+        (Some(name), Some(version), Some(manifest_dir)) => {
+            Some(mk_package_id(name, version, format!("{manifest_dir}/Cargo.toml")))
+        }
+        _ => None,
+    }
 }
 
 fn mk_package_id(
@@ -345,79 +384,9 @@ fn extract_inner_args(
     mem::swap(args, &mut new);
 }
 
-// TODO more
-fn track_verus_args(psess: &mut ParseSess, args_env_var: &Option<String>) {
-    psess.env_depinfo.get_mut().insert((
-        Symbol::intern("__VERUS_DRIVER_ARGS__"),
-        args_env_var.as_deref().map(Symbol::intern),
-    ));
-}
-
-/// Track files that may be accessed at runtime in `file_depinfo` so that cargo will re-run verus
-/// when any of them are modified
-fn track_files(psess: &mut ParseSess) {
-    let file_depinfo = psess.file_depinfo.get_mut();
-
-    // During development track the `verus-driver` executable so that cargo will re-run verus whenever
-    // it is rebuilt
-    if cfg!(debug_assertions) {
-        if let Ok(current_exe) = env::current_exe() {
-            if let Some(current_exe) = current_exe.to_str() {
-                file_depinfo.insert(Symbol::intern(current_exe));
-            }
-        }
-    }
-}
-
-fn extend_rustc_args_for_excluded(args: &mut Vec<String>) {
-    args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
-}
-
-fn extend_rustc_args_for_erase_ghost(args: &mut Vec<String>) {
-    rust_verify::config::enable_default_features_and_verus_attr(args, true, true);
-    let allow = &[
-        "unused_imports",
-        "unused_variables",
-        "unused_assignments",
-        "unreachable_patterns",
-        "unused_parens",
-        "unused_braces",
-        "dead_code",
-        "unreachable_code",
-        "unused_mut",
-        "unused_labels",
-        "unused_attributes",
-    ];
-    for a in allow {
-        args.extend(["-A", a].map(ToOwned::to_owned));
-    }
-    args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
-}
-
-fn extend_rustc_args_for_keep_ghost(args: &mut Vec<String>) {
-    rust_verify::config::enable_default_features_and_verus_attr(args, true, false);
-    args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
-    args.extend(["--cfg", "verus_keep_ghost_body"].map(ToOwned::to_owned));
-}
-
 struct DefaultCallbacks;
 
 impl rustc_driver::Callbacks for DefaultCallbacks {}
-
-/// This is different from `DefaultCallbacks` that it will inform Cargo to track the value of
-/// `__VERUS_ARGS__` environment variable.
-struct RustcCallbacks {
-    verus_args_var: Option<String>,
-}
-
-impl rustc_driver::Callbacks for RustcCallbacks {
-    fn config(&mut self, config: &mut interface::Config) {
-        let verus_args_var = self.verus_args_var.take();
-        config.parse_sess_created = Some(Box::new(move |psess| {
-            track_verus_args(psess, &verus_args_var);
-        }));
-    }
-}
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -454,13 +423,13 @@ impl rustc_driver::Callbacks for ProbeCallbacks {
 }
 
 struct VerusCallbacksWrapper<T> {
-    verus_args_var: Option<String>,
+    dep_tracker: Arc<DepTracker>,
     wrapped: T,
 }
 
 impl<T> VerusCallbacksWrapper<T> {
-    fn new(verus_args_var: Option<String>, wrapped: T) -> Self {
-        Self { verus_args_var, wrapped }
+    fn new(dep_tracker: Arc<DepTracker>, wrapped: T) -> Self {
+        Self { dep_tracker, wrapped }
     }
 
     fn unwrap(self) -> T {
@@ -470,10 +439,18 @@ impl<T> VerusCallbacksWrapper<T> {
 
 impl<T: rustc_driver::Callbacks> rustc_driver::Callbacks for VerusCallbacksWrapper<T> {
     fn config(&mut self, config: &mut interface::Config) {
-        let verus_args_var = self.verus_args_var.take();
+        let dep_tracker = self.dep_tracker.clone();
         config.parse_sess_created = Some(Box::new(move |psess| {
-            track_verus_args(psess, &verus_args_var);
-            track_files(psess);
+            for (var, val) in dep_tracker.env.iter() {
+                psess
+                    .env_depinfo
+                    .get_mut()
+                    .insert((Symbol::intern(var), val.as_deref().map(Symbol::intern)));
+            }
+            for path in dep_tracker.files.iter() {
+                psess.file_depinfo.get_mut().insert(Symbol::intern(path.to_str().unwrap()));
+                // TODO error handling
+            }
         }));
         self.wrapped.config(config)
     }
@@ -503,23 +480,35 @@ impl<T: rustc_driver::Callbacks> rustc_driver::Callbacks for VerusCallbacksWrapp
     }
 }
 
-pub struct CompilerCallbacksEraseMacro {
-    pub do_compile: bool,
+fn extend_rustc_args_for_excluded(args: &mut Vec<String>) {
+    args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
 }
 
-impl rustc_driver::Callbacks for CompilerCallbacksEraseMacro {
-    fn after_crate_root_parsing<'tcx>(
-        &mut self,
-        _compiler: &rustc_interface::interface::Compiler,
-        queries: &'tcx rustc_interface::Queries<'tcx>,
-    ) -> rustc_driver::Compilation {
-        if !self.do_compile {
-            rust_verify::lifetime::check(queries);
-            rustc_driver::Compilation::Stop
-        } else {
-            rustc_driver::Compilation::Continue
-        }
+fn extend_rustc_args_for_erase_ghost(args: &mut Vec<String>) {
+    rust_verify::config::enable_default_features_and_verus_attr(args, true, true);
+    let allow = &[
+        "unused_imports",
+        "unused_variables",
+        "unused_assignments",
+        "unreachable_patterns",
+        "unused_parens",
+        "unused_braces",
+        "dead_code",
+        "unreachable_code",
+        "unused_mut",
+        "unused_labels",
+        "unused_attributes",
+    ];
+    for a in allow {
+        args.extend(["-A", a].map(ToOwned::to_owned));
     }
+    args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
+}
+
+fn extend_rustc_args_for_keep_ghost(args: &mut Vec<String>) {
+    rust_verify::config::enable_default_features_and_verus_attr(args, true, false);
+    args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
+    args.extend(["--cfg", "verus_keep_ghost_body"].map(ToOwned::to_owned));
 }
 
 #[must_use]
