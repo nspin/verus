@@ -101,7 +101,6 @@ pub fn main() {
         // whenever it is rebuilt
         if cfg!(debug_assertions) {
             if let Ok(current_exe) = env::current_exe() {
-                // TODO ignore in cases where current_exe is not valid unicode
                 dep_tracker.mark_file(current_exe);
             }
         }
@@ -133,6 +132,7 @@ pub fn main() {
                 if is_builtin || is_builtin_macros {
                     extend_rustc_args_for_builtin_and_builtin_macros(&mut orig_args);
                 }
+
                 return rustc_driver::RunCompiler::new(
                     &orig_args,
                     &mut VerusCallbacksWrapper::new(Arc::new(dep_tracker), DefaultCallbacks),
@@ -173,28 +173,25 @@ pub fn main() {
             )
             });
 
-        let is_primary_package = dep_tracker.get_env("CARGO_PRIMARY_PACKAGE").is_some();
+        {
+            let is_primary_package = dep_tracker.get_env("CARGO_PRIMARY_PACKAGE").is_some();
 
-        let compile = if is_primary_package {
-            parsed_verus_driver_inner_args.compile_when_primary_package
-        } else {
-            parsed_verus_driver_inner_args.compile_when_primary_package
-        };
+            let compile = if is_primary_package {
+                parsed_verus_driver_inner_args.compile_when_primary_package
+            } else {
+                parsed_verus_driver_inner_args.compile_when_primary_package
+            };
 
-        if compile {
-            verus_inner_args.push("--compile".to_owned());
+            if compile {
+                verus_inner_args.push("--compile".to_owned());
+            }
         }
 
-        let probe = {
-            let mut callbacks = ProbeCallbacks::new();
-            let status = rustc_driver::RunCompiler::new(&rustc_args, &mut callbacks).run();
-            assert!(status.is_ok(), "{:?}", status); // TODO
-            callbacks.completed.unwrap()
-        };
+        let probe_output = run_probe(&rustc_args);
 
         verus_inner_args.extend([
             "--export".to_owned(),
-            format!("{}", probe.crate_meta_path.with_extension("vir").display()),
+            format!("{}", probe_output.crate_meta_path.with_extension("vir").display()),
         ]);
 
         {
@@ -228,10 +225,13 @@ pub fn main() {
             None,
         );
 
-        // TODO proper error message
-        assert!(unparsed.len() == 1 && unparsed[0] == program_name_for_config, "{:?}", unparsed);
+        assert!(
+            unparsed.len() == 1 && unparsed[0] == program_name_for_config,
+            "leftovers after parsing --verus-arg=<..> args: {:?}",
+            unparsed
+        );
 
-        // HACK
+        // TODO
         assert!(!parsed_verus_inner_args.version);
 
         let dep_tracker = Arc::new(dep_tracker);
@@ -275,11 +275,8 @@ pub fn main() {
         }
 
         if status.is_err() || verifier.encountered_vir_error {
-            // TODO proper error message
-            panic!(
-                "status.is_err() || verifier.encountered_vir_error... {:?} {:?}",
-                status, verifier.encountered_vir_error
-            );
+            // TODO
+            panic!("verification failed");
         }
 
         let compile_status = if !verifier.args.compile && verifier.args.no_lifetime {
@@ -300,8 +297,8 @@ pub fn main() {
         };
 
         if compile_status.is_err() {
-            // TODO proper error message
-            panic!("compile_status.is_err()... {:?}", status);
+            // TODO
+            panic!("compilation failed");
         }
 
         compile_status
@@ -410,40 +407,6 @@ struct DefaultCallbacks;
 
 impl rustc_driver::Callbacks for DefaultCallbacks {}
 
-#[allow(dead_code)]
-#[derive(Debug)]
-struct ProbeCompleted {
-    crate_name: String,
-    crate_meta_path: PathBuf,
-}
-
-struct ProbeCallbacks {
-    completed: Option<ProbeCompleted>,
-}
-
-impl ProbeCallbacks {
-    fn new() -> Self {
-        Self { completed: None }
-    }
-}
-
-impl rustc_driver::Callbacks for ProbeCallbacks {
-    fn after_crate_root_parsing<'tcx>(
-        &mut self,
-        _compiler: &rustc_interface::interface::Compiler,
-        queries: &'tcx rustc_interface::Queries<'tcx>,
-    ) -> rustc_driver::Compilation {
-        let completed = queries.global_ctxt().unwrap().enter(|tcx| ProbeCompleted {
-            crate_name: tcx.crate_name(rustc_span::def_id::LOCAL_CRATE).as_str().to_owned(),
-            crate_meta_path: tcx
-                .output_filenames(())
-                .output_path(rustc_session::config::OutputType::Metadata),
-        });
-        self.completed.replace(completed);
-        rustc_driver::Compilation::Stop
-    }
-}
-
 struct VerusCallbacksWrapper<T> {
     dep_tracker: Arc<DepTracker>,
     wrapped: T,
@@ -470,8 +433,10 @@ impl<T: rustc_driver::Callbacks> rustc_driver::Callbacks for VerusCallbacksWrapp
                     .insert((Symbol::intern(var), val.as_deref().map(Symbol::intern)));
             }
             for path in dep_tracker.files.iter() {
-                psess.file_depinfo.get_mut().insert(Symbol::intern(path.to_str().unwrap()));
-                // TODO error handling
+                psess.file_depinfo.get_mut().insert(Symbol::intern(
+                    path.to_str()
+                        .unwrap_or_else(|| panic!("{} is not valid unicode", path.display())),
+                ));
             }
         }));
         self.wrapped.config(config)
@@ -502,8 +467,55 @@ impl<T: rustc_driver::Callbacks> rustc_driver::Callbacks for VerusCallbacksWrapp
     }
 }
 
+fn run_probe(rustc_args: &[String]) -> ProbeOutput {
+    let mut callbacks = ProbeCallbacks::new();
+    let status = rustc_driver::RunCompiler::new(rustc_args, &mut callbacks).run();
+    assert!(status.is_ok(), "probe failed: {:?}", status);
+    callbacks.output.unwrap()
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+struct ProbeOutput {
+    crate_name: String,
+    crate_meta_path: PathBuf,
+}
+
+struct ProbeCallbacks {
+    output: Option<ProbeOutput>,
+}
+
+impl ProbeCallbacks {
+    fn new() -> Self {
+        Self { output: None }
+    }
+}
+
+impl rustc_driver::Callbacks for ProbeCallbacks {
+    fn after_crate_root_parsing<'tcx>(
+        &mut self,
+        _compiler: &rustc_interface::interface::Compiler,
+        queries: &'tcx rustc_interface::Queries<'tcx>,
+    ) -> rustc_driver::Compilation {
+        let output = queries.global_ctxt().unwrap().enter(|tcx| ProbeOutput {
+            crate_name: tcx.crate_name(rustc_span::def_id::LOCAL_CRATE).as_str().to_owned(),
+            crate_meta_path: tcx
+                .output_filenames(())
+                .output_path(rustc_session::config::OutputType::Metadata),
+        });
+        self.output.replace(output);
+        rustc_driver::Compilation::Stop
+    }
+}
+
 fn extend_rustc_args_for_builtin_and_builtin_macros(args: &mut Vec<String>) {
     args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
+}
+
+fn extend_rustc_args_for_verify(args: &mut Vec<String>) {
+    rust_verify::config::enable_default_features_and_verus_attr(args, true, false);
+    args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
+    args.extend(["--cfg", "verus_keep_ghost_body"].map(ToOwned::to_owned));
 }
 
 fn extend_rustc_args_for_compile(args: &mut Vec<String>) {
@@ -525,12 +537,6 @@ fn extend_rustc_args_for_compile(args: &mut Vec<String>) {
         args.extend(["-A", a].map(ToOwned::to_owned));
     }
     args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
-}
-
-fn extend_rustc_args_for_verify(args: &mut Vec<String>) {
-    rust_verify::config::enable_default_features_and_verus_attr(args, true, false);
-    args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
-    args.extend(["--cfg", "verus_keep_ghost_body"].map(ToOwned::to_owned));
 }
 
 #[must_use]
