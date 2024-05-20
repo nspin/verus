@@ -168,7 +168,11 @@ impl VerusCmd {
 
             let mut verus_driver_args_for_package = vec![];
 
-            if verus_metadata.no_vstd || verus_metadata.is_vstd {
+            if verus_metadata.is_vstd {
+                verus_driver_args_for_package.push("--verus-arg=--is-vstd".to_owned());
+            }
+
+            if verus_metadata.no_vstd {
                 verus_driver_args_for_package.push("--verus-arg=--no-vstd".to_owned());
             }
 
