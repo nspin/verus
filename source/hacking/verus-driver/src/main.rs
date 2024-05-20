@@ -106,9 +106,45 @@ pub fn main() {
             }
         }
 
+        let package_id = get_package_id_from_env(&mut dep_tracker);
+
+        if let Some(package_id) = &package_id {
+            let verify_package =
+                dep_tracker.get_env(&format!("__VERUS_DRIVER_VERIFY_{package_id}")).as_deref()
+                    == Some("1");
+
+            let is_build_script = dep_tracker
+                .get_env("CARGO_CRATE_NAME")
+                .map(|name| name.starts_with("build_script_"))
+                .unwrap_or(false);
+
+            let verify_crate = verify_package && !is_build_script;
+
+            if !verify_crate {
+                let is_builtin = dep_tracker
+                    .get_env(&format!("__VERUS_DRIVER_IS_BUILTIN_{package_id}"))
+                    .as_deref()
+                    == Some("1");
+                let is_builtin_macros = dep_tracker
+                    .get_env(&format!("__VERUS_DRIVER_IS_BUILTIN_MACROS_{package_id}"))
+                    .as_deref()
+                    == Some("1");
+
+                if is_builtin || is_builtin_macros {
+                    extend_rustc_args_for_builtin_and_builtin_macros(&mut orig_args);
+                }
+                return rustc_driver::RunCompiler::new(
+                    &orig_args,
+                    &mut VerusCallbacksWrapper::new(Arc::new(dep_tracker), DefaultCallbacks),
+                )
+                .set_using_internal_features(using_internal_features.clone())
+                .run();
+            }
+        }
+
         let mut all_args = orig_args.clone();
 
-        if let Some(package_id) = get_package_id_from_env(&mut dep_tracker) {
+        if let Some(package_id) = &package_id {
             if let Some(val) = dep_tracker.get_env("__VERUS_DRIVER_ARGS__") {
                 all_args.extend(unpack_verus_driver_args_for_env(&val));
             }
@@ -128,7 +164,7 @@ pub fn main() {
             verus_inner_args.push(inner_arg)
         });
 
-        let mut rustc_args = all_args;
+        let rustc_args = all_args;
 
         let parsed_verus_driver_inner_args =
             VerusDriverInnerArgs::try_parse_from(&verus_driver_inner_args).unwrap_or_else(|err| {
@@ -136,13 +172,6 @@ pub fn main() {
                 "failed to parse verus driver inner args from {verus_driver_inner_args:?}: {err}"
             )
             });
-
-        let is_build_script = dep_tracker
-            .get_env("CARGO_CRATE_NAME")
-            .map(|name| name.starts_with("build_script_"))
-            .unwrap_or(false);
-
-        let verify_crate = !parsed_verus_driver_inner_args.skip_verification && !is_build_script;
 
         let is_primary_package = dep_tracker.get_env("CARGO_PRIMARY_PACKAGE").is_some();
 
@@ -206,21 +235,6 @@ pub fn main() {
         assert!(!parsed_verus_inner_args.version);
 
         let dep_tracker = Arc::new(dep_tracker);
-
-        // TODO unecessary deps are tracked in this case, which will cause unecessary rebuilds
-        if !verify_crate {
-            if parsed_verus_driver_inner_args.is_builtin
-                || parsed_verus_driver_inner_args.is_builtin_macros
-            {
-                extend_rustc_args_for_builtin_and_builtin_macros(&mut rustc_args);
-            }
-            return rustc_driver::RunCompiler::new(
-                &rustc_args,
-                &mut VerusCallbacksWrapper::new(dep_tracker.clone(), DefaultCallbacks),
-            )
-            .set_using_internal_features(using_internal_features.clone())
-            .run();
-        }
 
         let mk_file_loader = || rust_verify::file_loader::RealFileLoader;
 

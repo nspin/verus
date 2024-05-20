@@ -141,12 +141,30 @@ impl VerusCmd {
         let mut cmd = Command::new(env::var("CARGO").unwrap_or("cargo".into()));
 
         cmd.env("RUSTC_WRAPPER", Self::verus_driver_path())
-            .env("__VERUS_DRIVER_ARGS__", common_verus_driver_args)
             .arg(self.cargo_subcommand.to_arg().to_owned())
             .args(&self.cargo_args);
 
+        if !common_verus_driver_args.is_empty() {
+            cmd.env("__VERUS_DRIVER_ARGS__", common_verus_driver_args);
+        }
+
         for package in self.metadata().packages.iter() {
+            let package_id =
+                mk_package_id(&package.name, package.version.to_string(), &package.manifest_path);
+
             let verus_metadata = get_verus_metadata(package);
+
+            if verus_metadata.verify {
+                cmd.env(format!("__VERUS_DRIVER_VERIFY_{package_id}"), "1");
+            }
+
+            if verus_metadata.is_builtin {
+                cmd.env(format!("__VERUS_DRIVER_IS_BUILTIN_{package_id}"), "1");
+            }
+
+            if verus_metadata.is_builtin_macros {
+                cmd.env(format!("__VERUS_DRIVER_IS_BUILTIN_MACROS_{package_id}"), "1");
+            }
 
             let mut verus_driver_args_for_package = vec![];
 
@@ -154,27 +172,10 @@ impl VerusCmd {
                 verus_driver_args_for_package.push("--verus-arg=--no-vstd".to_owned());
             }
 
-            if verus_metadata.is_builtin {
-                verus_driver_args_for_package.push("--verus-driver-arg=--is-builtin".to_owned());
-            }
-
-            if verus_metadata.is_builtin_macros {
-                verus_driver_args_for_package
-                    .push("--verus-driver-arg=--is-builtin-macros".to_owned());
-            }
-
-            if !verus_metadata.verify {
-                verus_driver_args_for_package
-                    .push("--verus-driver-arg=--skip-verification".to_owned());
-            }
-
             for import in verus_metadata.imports.iter() {
                 verus_driver_args_for_package
                     .push(format!("--verus-driver-arg=--find-import={import}"));
             }
-
-            let package_id =
-                mk_package_id(&package.name, package.version.to_string(), &package.manifest_path);
 
             if !verus_driver_args_for_package.is_empty() {
                 cmd.env(
