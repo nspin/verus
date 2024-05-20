@@ -234,6 +234,10 @@ pub fn main() {
         // TODO
         assert!(!parsed_verus_inner_args.version);
 
+        // Track env vars used by Verus
+        dep_tracker.get_env("VERUS_Z3_PATH");
+        dep_tracker.get_env("VERUS_SINGULAR_PATH");
+
         let dep_tracker = Arc::new(dep_tracker);
 
         let mk_file_loader = || rust_verify::file_loader::RealFileLoader;
