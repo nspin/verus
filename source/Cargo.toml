@@ -4,10 +4,12 @@ members = [
   "air",
   "builtin",
   "builtin_macros",
+  "cargo-verus",
   "vir",
   "vir_macros",
   "rust_verify",
   "verus",
+  "verus-driver",
   "rust_verify_test",
   "rust_verify_test_macros",
   "state_machines_macros",
@@ -17,11 +19,8 @@ members = [
   "tools/internals_interface",
   "tools/line_count",
   "tools/qi-graph",
-  "hacking/verus-driver",
-  "hacking/cargo-verus",
-  "hacking/examples/integers",
-  "hacking/examples/doubly-linked-xor",
-  "hacking/examples/rust-verify-examples",
+  "cargo-verus-illustration/doubly-linked-xor",
+  "cargo-verus-illustration/rust-verify-examples",
 ]
 
 # do not modify the following two lines
