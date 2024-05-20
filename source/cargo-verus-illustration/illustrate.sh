@@ -2,7 +2,7 @@
 
 set -eu -o pipefail
 
-# for using nightly-only features on stable, required by verus code
+# for using nightly-only features on stable
 export RUSTC_BOOTSTRAP=1
 
 # require VERUS_Z3_PATH and VERUS_SINGULAR_PATH to be set
