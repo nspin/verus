@@ -5,7 +5,7 @@ license = "MIT"
 edition = "2021"
 
 [dependencies]
-rust_verify = { path = "../../rust_verify" }
+rust_verify = { path = "../rust_verify" }
 rustc_tools_util = "0.3.0"
 clap = { version = "4.5.4", features = ["derive"] }
 sha2 = "0.10.8"
