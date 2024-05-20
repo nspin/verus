@@ -166,6 +166,9 @@ pub fn main() {
 
         let rustc_args = all_args;
 
+        // HACK: clap expects exe in first arg
+        verus_driver_inner_args.insert(0, "dummy".to_owned());
+
         let parsed_verus_driver_inner_args =
             VerusDriverInnerArgs::try_parse_from(&verus_driver_inner_args).unwrap_or_else(|err| {
                 panic!(
