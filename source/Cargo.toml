@@ -12,6 +12,7 @@ members = [
   "rust_verify_test_macros",
   "state_machines_macros",
   "verusdoc",
+  "vstd",
   "vstd_build",
   "tools/internals_interface",
   "tools/line_count",
@@ -21,9 +22,6 @@ members = [
   "hacking/examples/integers",
   "hacking/examples/doubly-linked-xor",
   "hacking/examples/rust-verify-examples",
-]
-exclude = [
-  # "vstd",
 ]
 
 # do not modify the following two lines
