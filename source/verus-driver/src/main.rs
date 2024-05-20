@@ -179,7 +179,7 @@ pub fn main() {
             let compile = if is_primary_package {
                 parsed_verus_driver_inner_args.compile_when_primary_package
             } else {
-                parsed_verus_driver_inner_args.compile_when_primary_package
+                parsed_verus_driver_inner_args.compile_when_not_primary_package
             };
 
             if compile {
