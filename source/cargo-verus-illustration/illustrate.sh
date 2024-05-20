@@ -25,3 +25,16 @@ cargo run -p cargo-verus -- -p doubly-linked-xor
 
 # build and verify examples from ../rust_verify/example
 cargo run -p cargo-verus -- -p rust-verify-examples --examples
+
+# build and verify example using pre-built sysroot
+
+verus_sysroot_parent=$(realpath ../verus-sysroot-dummy)
+
+pushd $verus_sysroot_parent
+./build-verus-sysroot.sh
+popd
+
+verus_sysroot=$verus_sysroot_parent/verus-sysroot
+
+VERUS_SYSROOT=$verus_sysroot \
+    cargo run -p cargo-verus -- -p doubly-linked-xor-using-verus-sysroot

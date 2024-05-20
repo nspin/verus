@@ -4,6 +4,7 @@ extern crate rustc_driver;
 extern crate rustc_interface;
 extern crate rustc_session;
 extern crate rustc_span;
+extern crate rustc_target;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env::{self, VarError};
@@ -18,6 +19,7 @@ use rustc_interface::interface;
 use rustc_session::config::ErrorOutputType;
 use rustc_session::EarlyDiagCtxt;
 use rustc_span::symbol::Symbol;
+use rustc_target::spec::TargetTriple;
 
 use clap::Parser;
 use sha2::{Digest, Sha256};
@@ -164,7 +166,11 @@ pub fn main() {
             verus_inner_args.push(inner_arg)
         });
 
-        let rustc_args = all_args;
+        let orig_rustc_args = all_args;
+
+        let probe_output = run_probe(&orig_rustc_args);
+
+        let mut rustc_args = orig_rustc_args;
 
         // HACK: clap expects exe in first arg
         verus_driver_inner_args.insert(0, "dummy".to_owned());
@@ -190,7 +196,32 @@ pub fn main() {
             }
         }
 
-        let probe_output = run_probe(&rustc_args);
+        if let Some(verus_sysroot) = dep_tracker.get_env("VERUS_SYSROOT") {
+            let mut add_extern = |key, pattern: String| {
+                let mut paths = glob::glob(pattern.as_str()).unwrap();
+                let path = paths.next().unwrap().unwrap();
+                assert!(paths.next().is_none());
+                rustc_args.push("--extern".to_owned());
+                rustc_args.push(format!("{key}={}", path.display()));
+            };
+            let target_triple = &probe_output.target_triple;
+            add_extern(
+                "builtin_macros",
+                format!("{verus_sysroot}/lib/rustlib/lib/libbuiltin_macros-*.so"),
+            );
+            add_extern(
+                "builtin",
+                format!("{verus_sysroot}/lib/rustlib/{target_triple}/lib/libbuiltin-*.rlib"),
+            );
+            add_extern(
+                "vstd",
+                format!("{verus_sysroot}/lib/rustlib/{target_triple}/lib/libvstd-*.rlib"),
+            );
+            rustc_args.push("-L".to_owned());
+            rustc_args.push(format!("dependency={verus_sysroot}/lib/rustlib/lib"));
+            rustc_args.push("-L".to_owned());
+            rustc_args.push(format!("dependency={verus_sysroot}/lib/rustlib/{target_triple}/lib"));
+        }
 
         verus_inner_args.extend([
             "--export".to_owned(),
@@ -199,7 +230,7 @@ pub fn main() {
 
         {
             let mut remaining_imports = parsed_verus_driver_inner_args.find_import.clone();
-            let mut it = orig_args.iter();
+            let mut it = rustc_args.iter();
             while let Some(arg) = it.next() {
                 if arg == "--extern" {
                     let pair = it.next().unwrap();
@@ -207,8 +238,10 @@ pub fn main() {
                     let key = split.next().unwrap();
                     if let Some(i) = remaining_imports.iter().position(|import| import == &key) {
                         remaining_imports.remove(i);
-                        let rmeta_path = split.next().unwrap();
-                        let vir_path = PathBuf::from(rmeta_path).with_extension("vir");
+                        let extern_path = PathBuf::from(split.next().unwrap());
+                        assert!(["rlib", "rmeta"]
+                            .contains(&extern_path.extension().unwrap().to_str().unwrap()));
+                        let vir_path = extern_path.with_extension("vir");
                         verus_inner_args.extend([
                             "--import".to_owned(),
                             format!("{key}={}", vir_path.display()),
@@ -217,7 +250,11 @@ pub fn main() {
                     }
                 }
             }
-            assert!(remaining_imports.is_empty(), "{:?}", remaining_imports);
+            assert!(
+                remaining_imports.is_empty(),
+                "could not find imports: {:?}",
+                remaining_imports
+            );
         }
 
         let program_name_for_config = "TODO";
@@ -486,6 +523,7 @@ fn run_probe(rustc_args: &[String]) -> ProbeOutput {
 struct ProbeOutput {
     crate_name: String,
     crate_meta_path: PathBuf,
+    target_triple: TargetTriple,
 }
 
 struct ProbeCallbacks {
@@ -501,7 +539,7 @@ impl ProbeCallbacks {
 impl rustc_driver::Callbacks for ProbeCallbacks {
     fn after_crate_root_parsing<'tcx>(
         &mut self,
-        _compiler: &rustc_interface::interface::Compiler,
+        compiler: &rustc_interface::interface::Compiler,
         queries: &'tcx rustc_interface::Queries<'tcx>,
     ) -> rustc_driver::Compilation {
         let output = queries.global_ctxt().unwrap().enter(|tcx| ProbeOutput {
@@ -509,6 +547,7 @@ impl rustc_driver::Callbacks for ProbeCallbacks {
             crate_meta_path: tcx
                 .output_filenames(())
                 .output_path(rustc_session::config::OutputType::Metadata),
+            target_triple: compiler.sess.opts.target_triple.clone(),
         });
         self.output.replace(output);
         rustc_driver::Compilation::Stop

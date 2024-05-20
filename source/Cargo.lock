@@ -530,6 +530,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "doubly-linked-xor-using-verus-sysroot"
+version = "0.1.0"
+
+[[package]]
 name = "dtoa"
 version = "1.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -689,6 +693,12 @@ dependencies = [
  "log",
  "url",
 ]
+
+[[package]]
+name = "glob"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2fabcfbdc87f4758337ca535fb41a6d701b65693ce38287d856d1674551ec9b"
 
 [[package]]
 name = "hashbrown"
@@ -2264,10 +2274,20 @@ name = "verus-driver"
 version = "0.1.0"
 dependencies = [
  "clap 4.5.4",
+ "glob",
  "hex",
  "rust_verify",
  "rustc_tools_util",
  "sha2",
+]
+
+[[package]]
+name = "verus-sysroot-dummy"
+version = "0.0.0"
+dependencies = [
+ "builtin",
+ "builtin_macros",
+ "vstd",
 ]
 
 [[package]]
