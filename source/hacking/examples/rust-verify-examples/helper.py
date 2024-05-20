@@ -4,13 +4,14 @@ from pathlib import Path
 import subprocess
 
 BLOCKLIST = set([
+    # supposed to fail
     "assertions.rs",
     "debug.rs",
     "debug_expand.rs",
     "test_expand_errors.rs",
     "trigger_loops.rs",
     "guide/higher_order_fns.rs",
-    "pcm/count_to_two.rs",
+    # failing because out-of-date
     "state_machines/disk_example.rs",
     "scache/rwlock.rs"
     ])

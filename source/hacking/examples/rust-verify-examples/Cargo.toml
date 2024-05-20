@@ -197,6 +197,10 @@ name = "pcm-agreement"
 path = "link/pcm/agreement.rs"
 
 [[example]]
+name = "pcm-count_to_two"
+path = "link/pcm/count_to_two.rs"
+
+[[example]]
 name = "pcm-log"
 path = "link/pcm/log.rs"
 
