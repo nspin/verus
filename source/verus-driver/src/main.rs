@@ -196,7 +196,10 @@ pub fn main() {
             }
         }
 
-        if let Some(verus_sysroot) = dep_tracker.get_env("VERUS_SYSROOT") {
+        if let Some(verus_sysroot) = parsed_verus_driver_inner_args
+            .verus_sysroot
+            .or_else(|| dep_tracker.get_env("VERUS_SYSROOT"))
+        {
             let mut add_extern = |key, pattern: String| {
                 let mut paths = glob::glob(pattern.as_str()).unwrap();
                 let path = paths.next().unwrap().unwrap();
@@ -387,6 +390,8 @@ struct VerusDriverInnerArgs {
     is_builtin_macros: bool,
     #[arg(long)]
     find_import: Vec<String>,
+    #[arg(long)]
+    verus_sysroot: Option<String>,
 }
 
 fn get_package_id_from_env(dep_tracker: &mut DepTracker) -> Option<String> {

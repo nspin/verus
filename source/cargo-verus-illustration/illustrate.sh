@@ -38,3 +38,8 @@ verus_sysroot=$verus_sysroot_parent/verus-sysroot
 
 VERUS_SYSROOT=$verus_sysroot \
     cargo run -p cargo-verus -- -p doubly-linked-xor-using-verus-sysroot
+
+# specify sysroot another way
+
+cargo run -p cargo-verus -- -p doubly-linked-xor-using-verus-sysroot -- \
+    --verus-driver-arg=--verus-sysroot=$verus_sysroot
