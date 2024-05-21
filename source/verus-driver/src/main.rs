@@ -382,8 +382,6 @@ struct VerusDriverInnerArgs {
     #[arg(long)]
     compile_when_not_primary_package: bool,
     #[arg(long)]
-    skip_verification: bool,
-    #[arg(long)]
     is_builtin: bool,
     #[arg(long)]
     is_builtin_macros: bool,
