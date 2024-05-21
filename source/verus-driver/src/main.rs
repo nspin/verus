@@ -6,8 +6,8 @@ extern crate rustc_session;
 extern crate rustc_span;
 extern crate rustc_target;
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::env::{self, VarError};
+use std::collections::BTreeMap;
+use std::env;
 use std::io::Read;
 use std::mem;
 use std::path::{Path, PathBuf};
@@ -15,17 +15,22 @@ use std::process::exit;
 use std::sync::Arc;
 use std::time::Instant;
 
-use rustc_interface::interface;
 use rustc_session::config::ErrorOutputType;
 use rustc_session::EarlyDiagCtxt;
-use rustc_span::symbol::Symbol;
-use rustc_target::spec::TargetTriple;
 
 use clap::Parser;
 use sha2::{Digest, Sha256};
 
 use rust_verify::driver::{is_verifying_entire_crate, CompilerCallbacksEraseMacro};
 use rust_verify::verifier::{Verifier, VerifierCallbacksEraseMacro};
+
+mod callback_utils;
+mod dep_tracker;
+
+use callback_utils::{
+    probe_after_crate_root_parsing, probe_config, ConfigCallbackWrapper, DefaultCallbacks,
+};
+use dep_tracker::DepTracker;
 
 const BUG_REPORT_URL: &str = "https://github.com/verus-lang/verus/issues/new";
 
@@ -137,7 +142,7 @@ pub fn main() {
 
                 return rustc_driver::RunCompiler::new(
                     &orig_args,
-                    &mut VerusCallbacksWrapper::new(Arc::new(dep_tracker), DefaultCallbacks),
+                    &mut ConfigCallbackWrapper::new(Arc::new(dep_tracker), DefaultCallbacks),
                 )
                 .set_using_internal_features(using_internal_features.clone())
                 .run();
@@ -168,7 +173,7 @@ pub fn main() {
 
         let orig_rustc_args = all_args;
 
-        let probe_output = run_probe(&orig_rustc_args);
+        let orig_rustc_opts = probe_config(&orig_rustc_args, |config| config.opts.clone()).unwrap();
 
         let mut rustc_args = orig_rustc_args;
 
@@ -196,18 +201,23 @@ pub fn main() {
             }
         }
 
+        let mut externs = BTreeMap::<String, Vec<PathBuf>>::new();
+
         if let Some(verus_sysroot) = parsed_verus_driver_inner_args
             .verus_sysroot
             .or_else(|| dep_tracker.get_env("VERUS_SYSROOT"))
         {
-            let mut add_extern = |key, pattern: String| {
+            let target_triple = &orig_rustc_opts.target_triple;
+
+            let mut add_extern = |key: &str, pattern: String| {
                 let mut paths = glob::glob(pattern.as_str()).unwrap();
                 let path = paths.next().unwrap().unwrap();
                 assert!(paths.next().is_none());
                 rustc_args.push("--extern".to_owned());
                 rustc_args.push(format!("{key}={}", path.display()));
+                externs.insert(key.to_owned(), vec![path]);
             };
-            let target_triple = &probe_output.target_triple;
+
             add_extern(
                 "builtin_macros",
                 format!("{verus_sysroot}/lib/rustlib/lib/libbuiltin_macros-*.so"),
@@ -220,45 +230,50 @@ pub fn main() {
                 "vstd",
                 format!("{verus_sysroot}/lib/rustlib/{target_triple}/lib/libvstd-*.rlib"),
             );
+
             rustc_args.push("-L".to_owned());
             rustc_args.push(format!("dependency={verus_sysroot}/lib/rustlib/lib"));
             rustc_args.push("-L".to_owned());
             rustc_args.push(format!("dependency={verus_sysroot}/lib/rustlib/{target_triple}/lib"));
         }
 
-        verus_inner_args.extend([
-            "--export".to_owned(),
-            format!("{}", probe_output.crate_meta_path.with_extension("vir").display()),
-        ]);
-
-        {
-            let mut remaining_imports = parsed_verus_driver_inner_args.find_import.clone();
-            let mut it = rustc_args.iter();
-            while let Some(arg) = it.next() {
-                if arg == "--extern" {
-                    let pair = it.next().unwrap();
-                    let mut split = pair.splitn(2, '=');
-                    let key = split.next().unwrap();
-                    if let Some(i) = remaining_imports.iter().position(|import| import == &key) {
-                        remaining_imports.remove(i);
-                        let extern_path = PathBuf::from(split.next().unwrap());
-                        assert!(["rlib", "rmeta"]
-                            .contains(&extern_path.extension().unwrap().to_str().unwrap()));
-                        let vir_path = extern_path.with_extension("vir");
-                        verus_inner_args.extend([
-                            "--import".to_owned(),
-                            format!("{key}={}", vir_path.display()),
-                        ]);
-                        dep_tracker.mark_file(vir_path);
-                    }
-                }
+        for (key, entry) in orig_rustc_opts.externs.iter() {
+            if let Some(files) = entry.files() {
+                externs
+                    .insert(key.clone(), files.map(|path| path.canonicalized()).cloned().collect());
             }
-            assert!(
-                remaining_imports.is_empty(),
-                "could not find imports: {:?}",
-                remaining_imports
-            );
         }
+
+        for key in &parsed_verus_driver_inner_args.find_import {
+            let paths = externs.get(key).unwrap();
+            assert_eq!(paths.len(), 1);
+            let path = &paths[0];
+            assert!(["rlib", "rmeta"].contains(&path.extension().unwrap().to_str().unwrap()));
+            let vir_path = path.with_extension("vir");
+            verus_inner_args
+                .extend(["--import".to_owned(), format!("{key}={}", vir_path.display())]);
+            dep_tracker.mark_file(vir_path);
+        }
+
+        let vir_path = {
+            // TODO
+            // This is a very inefficient way of determining the .vir output path. One good solution
+            // would be integrating the function of the --export into the callbacks in a way where
+            // we can grab .output_filenames() sometime when it's convenient.
+
+            let crate_meta_path =
+                probe_after_crate_root_parsing(&rustc_args, |_compiler, queries| {
+                    queries.global_ctxt().unwrap().enter(move |tcx| {
+                        tcx.output_filenames(())
+                            .output_path(rustc_session::config::OutputType::Metadata)
+                    })
+                })
+                .unwrap();
+
+            crate_meta_path.with_extension("vir")
+        };
+
+        verus_inner_args.extend(["--export".to_owned(), format!("{}", vir_path.display())]);
 
         let program_name_for_config = "TODO";
 
@@ -290,7 +305,7 @@ pub fn main() {
         let mut rustc_args_for_verify = rustc_args.clone();
         extend_rustc_args_for_verify(&mut rustc_args_for_verify);
 
-        let mut verifier_callbacks = VerusCallbacksWrapper::new(
+        let mut verifier_callbacks = ConfigCallbackWrapper::new(
             dep_tracker.clone(),
             VerifierCallbacksEraseMacro {
                 verifier,
@@ -334,7 +349,7 @@ pub fn main() {
             let do_compile = verifier.args.compile;
             rustc_driver::RunCompiler::new(
                 &rustc_args_for_compile,
-                &mut VerusCallbacksWrapper::new(
+                &mut ConfigCallbackWrapper::new(
                     dep_tracker.clone(),
                     CompilerCallbacksEraseMacro { do_compile },
                 ),
@@ -350,48 +365,6 @@ pub fn main() {
 
         compile_status
     }))
-}
-
-fn display_help() {
-    println!("{}", help_message());
-}
-
-#[derive(Debug, Default)]
-struct DepTracker {
-    env: BTreeMap<String, Option<String>>,
-    files: BTreeSet<PathBuf>,
-}
-
-impl DepTracker {
-    fn get_env(&mut self, var: &str) -> Option<String> {
-        let val = match env::var(var) {
-            Ok(s) => Some(s),
-            Err(VarError::NotPresent) => None,
-            Err(VarError::NotUnicode(_)) => panic!(), // TODO
-        };
-        self.env.insert(var.to_owned(), val.clone());
-        val
-    }
-
-    fn mark_file(&mut self, path: PathBuf) {
-        self.files.insert(path);
-    }
-}
-
-#[derive(Debug, Parser)]
-struct VerusDriverInnerArgs {
-    #[arg(long)]
-    compile_when_primary_package: bool,
-    #[arg(long)]
-    compile_when_not_primary_package: bool,
-    #[arg(long)]
-    is_builtin: bool,
-    #[arg(long)]
-    is_builtin_macros: bool,
-    #[arg(long)]
-    find_import: Vec<String>,
-    #[arg(long)]
-    verus_sysroot: Option<String>,
 }
 
 fn get_package_id_from_env(dep_tracker: &mut DepTracker) -> Option<String> {
@@ -450,111 +423,20 @@ fn extract_inner_args(
     mem::swap(args, &mut new);
 }
 
-struct DefaultCallbacks;
-
-impl rustc_driver::Callbacks for DefaultCallbacks {}
-
-struct VerusCallbacksWrapper<T> {
-    dep_tracker: Arc<DepTracker>,
-    wrapped: T,
-}
-
-impl<T> VerusCallbacksWrapper<T> {
-    fn new(dep_tracker: Arc<DepTracker>, wrapped: T) -> Self {
-        Self { dep_tracker, wrapped }
-    }
-
-    fn unwrap(self) -> T {
-        self.wrapped
-    }
-}
-
-impl<T: rustc_driver::Callbacks> rustc_driver::Callbacks for VerusCallbacksWrapper<T> {
-    fn config(&mut self, config: &mut interface::Config) {
-        let dep_tracker = self.dep_tracker.clone();
-        config.parse_sess_created = Some(Box::new(move |psess| {
-            for (var, val) in dep_tracker.env.iter() {
-                psess
-                    .env_depinfo
-                    .get_mut()
-                    .insert((Symbol::intern(var), val.as_deref().map(Symbol::intern)));
-            }
-            for path in dep_tracker.files.iter() {
-                psess.file_depinfo.get_mut().insert(Symbol::intern(
-                    path.to_str()
-                        .unwrap_or_else(|| panic!("{} is not valid unicode", path.display())),
-                ));
-            }
-        }));
-        self.wrapped.config(config)
-    }
-
-    fn after_crate_root_parsing<'tcx>(
-        &mut self,
-        compiler: &rustc_interface::interface::Compiler,
-        queries: &'tcx rustc_interface::Queries<'tcx>,
-    ) -> rustc_driver::Compilation {
-        self.wrapped.after_crate_root_parsing(compiler, queries)
-    }
-
-    fn after_expansion<'tcx>(
-        &mut self,
-        compiler: &rustc_interface::interface::Compiler,
-        queries: &'tcx rustc_interface::Queries<'tcx>,
-    ) -> rustc_driver::Compilation {
-        self.wrapped.after_expansion(compiler, queries)
-    }
-
-    fn after_analysis<'tcx>(
-        &mut self,
-        compiler: &rustc_interface::interface::Compiler,
-        queries: &'tcx rustc_interface::Queries<'tcx>,
-    ) -> rustc_driver::Compilation {
-        self.wrapped.after_analysis(compiler, queries)
-    }
-}
-
-fn run_probe(rustc_args: &[String]) -> ProbeOutput {
-    let mut callbacks = ProbeCallbacks::new();
-    let status = rustc_driver::RunCompiler::new(rustc_args, &mut callbacks).run();
-    assert!(status.is_ok(), "probe failed: {:?}", status);
-    callbacks.output.unwrap()
-}
-
-#[allow(dead_code)]
-#[derive(Debug)]
-struct ProbeOutput {
-    crate_name: String,
-    crate_meta_path: PathBuf,
-    target_triple: TargetTriple,
-}
-
-struct ProbeCallbacks {
-    output: Option<ProbeOutput>,
-}
-
-impl ProbeCallbacks {
-    fn new() -> Self {
-        Self { output: None }
-    }
-}
-
-impl rustc_driver::Callbacks for ProbeCallbacks {
-    fn after_crate_root_parsing<'tcx>(
-        &mut self,
-        compiler: &rustc_interface::interface::Compiler,
-        queries: &'tcx rustc_interface::Queries<'tcx>,
-    ) -> rustc_driver::Compilation {
-        let output = queries.global_ctxt().unwrap().enter(|tcx| ProbeOutput {
-            crate_name: tcx.crate_name(rustc_span::def_id::LOCAL_CRATE).as_str().to_owned(),
-            crate_meta_path: tcx
-                .output_filenames(())
-                .output_path(rustc_session::config::OutputType::Metadata),
-            target_triple: compiler.sess.opts.target_triple.clone(),
-        });
-        self.output.replace(output);
-        rustc_driver::Compilation::Stop
-    }
+#[derive(Debug, Parser)]
+struct VerusDriverInnerArgs {
+    #[arg(long)]
+    compile_when_primary_package: bool,
+    #[arg(long)]
+    compile_when_not_primary_package: bool,
+    #[arg(long)]
+    is_builtin: bool,
+    #[arg(long)]
+    is_builtin_macros: bool,
+    #[arg(long)]
+    find_import: Vec<String>,
+    #[arg(long)]
+    verus_sysroot: Option<String>,
 }
 
 fn extend_rustc_args_for_builtin_and_builtin_macros(args: &mut Vec<String>) {
@@ -586,6 +468,10 @@ fn extend_rustc_args_for_compile(args: &mut Vec<String>) {
         args.extend(["-A", a].map(ToOwned::to_owned));
     }
     args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
+}
+
+fn display_help() {
+    println!("{}", help_message());
 }
 
 #[must_use]
