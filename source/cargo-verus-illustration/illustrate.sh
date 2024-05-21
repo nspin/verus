@@ -20,6 +20,9 @@ cargo run -p cargo-verus -- --check -p doubly-linked-xor
 # build and verify an example with codegen (like cargo build)
 cargo run -p cargo-verus -- -p doubly-linked-xor
 
+# this time with an argument for verus
+cargo run -p cargo-verus -- -p doubly-linked-xor -- --verus-arg=--rlimit=60
+
 # run it
 ../target/debug/doubly-linked-xor
 
