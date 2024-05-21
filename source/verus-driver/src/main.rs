@@ -1,4 +1,5 @@
 #![feature(rustc_private)]
+#![feature(closure_lifetime_binder)]
 
 extern crate rustc_driver;
 extern crate rustc_interface;
@@ -13,24 +14,25 @@ use std::mem;
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::sync::Arc;
-use std::time::Instant;
 
+use rustc_driver::{Callbacks, RunCompiler};
 use rustc_session::config::ErrorOutputType;
 use rustc_session::EarlyDiagCtxt;
+use rustc_span::ErrorGuaranteed;
 
 use clap::Parser;
 use sha2::{Digest, Sha256};
 
-use rust_verify::driver::{is_verifying_entire_crate, CompilerCallbacksEraseMacro};
-use rust_verify::verifier::{Verifier, VerifierCallbacksEraseMacro};
-
 mod callback_utils;
 mod dep_tracker;
+mod verifier;
 
 use callback_utils::{
-    probe_after_crate_root_parsing, probe_config, ConfigCallbackWrapper, DefaultCallbacks,
+    probe_after_crate_root_parsing, probe_config, ConfigCallback, ConfigCallbackWrapper,
+    DefaultCallbacks,
 };
 use dep_tracker::{DepTracker, DepTrackerConfigCallback};
+use verifier::CompilerRunner;
 
 const BUG_REPORT_URL: &str = "https://github.com/verus-lang/verus/issues/new";
 
@@ -54,12 +56,11 @@ pub fn main() {
     exit(rustc_driver::catch_with_exit_code(move || {
         let mut orig_args = env::args().collect::<Vec<_>>();
 
-        if orig_args.get(1).map(String::as_str) == Some(rust_verify::lifetime::LIFETIME_DRIVER_ARG)
-        {
+        if orig_args.get(1).map(String::as_str) == Some(verifier::LIFETIME_DRIVER_ARG) {
             orig_args.remove(1);
             let mut buffer = String::new();
             std::io::stdin().read_to_string(&mut buffer).expect("failed to read stdin");
-            rust_verify::lifetime::lifetime_rustc_driver(&orig_args, buffer);
+            verifier::lifetime_rustc_driver(&orig_args, buffer);
             exit(0);
         }
 
@@ -143,8 +144,8 @@ pub fn main() {
                 return rustc_driver::RunCompiler::new(
                     &orig_args,
                     &mut ConfigCallbackWrapper::new(
-                        DepTrackerConfigCallback::new(Arc::new(dep_tracker)),
-                        DefaultCallbacks,
+                        &mut DepTrackerConfigCallback::new(Arc::new(dep_tracker)),
+                        &mut DefaultCallbacks,
                     ),
                 )
                 .set_using_internal_features(using_internal_features.clone())
@@ -278,91 +279,59 @@ pub fn main() {
 
         verus_inner_args.extend(["--export".to_owned(), format!("{}", vir_path.display())]);
 
-        let program_name_for_config = "TODO";
-
-        let (parsed_verus_inner_args, unparsed) = rust_verify::config::parse_args_with_imports(
-            &program_name_for_config.to_owned(),
-            verus_inner_args.iter().cloned(),
-            None,
-        );
-
-        assert!(
-            unparsed.len() == 1 && unparsed[0] == program_name_for_config,
-            "leftovers after parsing --verus-arg=<..> args: {:?}",
-            unparsed
-        );
-
-        // TODO
-        assert!(!parsed_verus_inner_args.version);
-
-        let is_core = parsed_verus_inner_args.vstd == rust_verify::config::Vstd::IsCore;
-
         // Track env vars used by Verus
         dep_tracker.get_env("VERUS_Z3_PATH");
         dep_tracker.get_env("VERUS_SINGULAR_PATH");
 
-        let dep_tracker_config_callback = DepTrackerConfigCallback::new(Arc::new(dep_tracker));
+        let mut dep_tracker_config_callback = DepTrackerConfigCallback::new(Arc::new(dep_tracker));
 
-        let mk_file_loader = || rust_verify::file_loader::RealFileLoader;
+        let mk_file_loader = || rustc_span::source_map::RealFileLoader;
 
-        let verifier = Verifier::new(parsed_verus_inner_args);
-
-        let mut rustc_args_for_verify = rustc_args.clone();
-        extend_rustc_args_for_verify(&mut rustc_args_for_verify, is_core);
-
-        let mut verifier_callbacks = ConfigCallbackWrapper::new(
-            dep_tracker_config_callback.clone(),
-            VerifierCallbacksEraseMacro {
-                verifier,
-                rust_start_time: Instant::now(),
-                rust_end_time: None,
-                lifetime_start_time: None,
-                lifetime_end_time: None,
-                rustc_args: rustc_args_for_verify.clone(),
-                file_loader: Some(Box::new(mk_file_loader())),
-            },
-        );
-
-        let status =
-            rustc_driver::RunCompiler::new(&rustc_args_for_verify, &mut verifier_callbacks)
+        let compiler_runner = for<'a, 'b> |args: &'a [String],
+                                           callbacks: &'b mut (dyn Callbacks + Send)|
+                     -> Result<(), ErrorGuaranteed> {
+            let mut wrapped_callbacks =
+                ConfigCallbackWrapper::new(&mut dep_tracker_config_callback, callbacks);
+            RunCompiler::new(args, &mut wrapped_callbacks)
                 .set_using_internal_features(using_internal_features.clone())
-                .run();
+                .run()
+        };
 
-        let VerifierCallbacksEraseMacro { verifier, .. } = verifier_callbacks.unwrap();
+        // let compiler_runner = ConfigCallbackCompilerRunner::new(
+        //     dep_tracker_config_callback,
+        //     |run_compiler: RunCompiler| {
+        //         run_compiler.set_using_internal_features(using_internal_features.clone()).run()
+        //     },
+        // );
 
-        if !verifier.args.output_json && !verifier.encountered_vir_error {
-            eprint!(
-                "verification results:: {} verified, {} errors",
-                verifier.count_verified, verifier.count_errors,
-            );
-            if !is_verifying_entire_crate(&verifier) {
-                eprint!(" (partial verification with `--verify-*`)");
-            }
-            eprintln!();
-        }
-
-        if status.is_err() || verifier.encountered_vir_error {
-            // TODO
-            panic!("verification failed");
-        }
-
-        if !verifier.args.compile && verifier.args.no_lifetime {
-            Ok(())
-        } else {
-            let mut rustc_args_for_compile = rustc_args.clone();
-            extend_rustc_args_for_compile(&mut rustc_args_for_compile, is_core);
-            let do_compile = verifier.args.compile;
-            rustc_driver::RunCompiler::new(
-                &rustc_args_for_compile,
-                &mut ConfigCallbackWrapper::new(
-                    dep_tracker_config_callback.clone(),
-                    CompilerCallbacksEraseMacro { do_compile },
-                ),
-            )
-            .set_using_internal_features(using_internal_features)
-            .run()
-        }
+        verifier::run(verus_inner_args.into_iter(), &rustc_args, mk_file_loader, compiler_runner)
     }))
+}
+
+struct ConfigCallbackCompilerRunner<T, F> {
+    config_callback: T,
+    f: F,
+}
+
+impl<T, F> ConfigCallbackCompilerRunner<T, F> {
+    fn new(config_callback: T, f: F) -> Self {
+        Self { config_callback, f }
+    }
+}
+
+impl<T: ConfigCallback + Send, F: FnMut(RunCompiler) -> Result<(), ErrorGuaranteed>> CompilerRunner
+    for ConfigCallbackCompilerRunner<T, F>
+{
+    fn run_compiler<C: Callbacks + Send>(
+        &mut self,
+        args: &[String],
+        callbacks: &mut C,
+    ) -> Result<(), ErrorGuaranteed> {
+        (self.f)(RunCompiler::new(
+            args,
+            &mut ConfigCallbackWrapper::new(&mut self.config_callback, callbacks),
+        ))
+    }
 }
 
 fn get_package_id_from_env(dep_tracker: &mut DepTracker) -> Option<String> {
@@ -439,39 +408,6 @@ struct VerusDriverInnerArgs {
 
 fn extend_rustc_args_for_builtin_and_builtin_macros(args: &mut Vec<String>) {
     args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
-}
-
-fn extend_rustc_args_for_verify(args: &mut Vec<String>, is_core: bool) {
-    rust_verify::config::enable_default_features_and_verus_attr(args, true, false);
-    args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
-    args.extend(["--cfg", "verus_keep_ghost_body"].map(ToOwned::to_owned));
-    if is_core {
-        args.extend(["--cfg", "verus_verify_core"].map(|s| s.to_string()));
-    }
-}
-
-fn extend_rustc_args_for_compile(args: &mut Vec<String>, is_core: bool) {
-    rust_verify::config::enable_default_features_and_verus_attr(args, true, true);
-    args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
-    if is_core {
-        args.extend(["--cfg", "verus_verify_core"].map(|s| s.to_string()));
-    }
-    let allow = &[
-        "unused_imports",
-        "unused_variables",
-        "unused_assignments",
-        "unreachable_patterns",
-        "unused_parens",
-        "unused_braces",
-        "dead_code",
-        "unreachable_code",
-        "unused_mut",
-        "unused_labels",
-        "unused_attributes",
-    ];
-    for a in allow {
-        args.extend(["-A", a].map(ToOwned::to_owned));
-    }
 }
 
 fn display_help() {

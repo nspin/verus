@@ -11,22 +11,20 @@ pub(crate) trait ConfigCallback {
     fn config(&mut self, _config: &mut Config) {}
 }
 
-pub(crate) struct ConfigCallbackWrapper<T, U> {
-    config_callback: T,
-    wrapped: U,
+pub(crate) struct ConfigCallbackWrapper<'a, 'b, T, U: ?Sized> {
+    config_callback: &'a mut T,
+    wrapped: &'b mut U,
 }
 
-impl<T, U> ConfigCallbackWrapper<T, U> {
-    pub(crate) fn new(config_callback: T, wrapped: U) -> Self {
+impl<'a, 'b, T, U: ?Sized> ConfigCallbackWrapper<'a, 'b, T, U> {
+    pub(crate) fn new(config_callback: &'a mut T, wrapped: &'b mut U) -> Self {
         Self { config_callback, wrapped }
     }
-
-    pub(crate) fn unwrap(self) -> U {
-        self.wrapped
-    }
 }
 
-impl<T: ConfigCallback, U: Callbacks> Callbacks for ConfigCallbackWrapper<T, U> {
+impl<'a, 'b, T: ConfigCallback, U: Callbacks + ?Sized> Callbacks
+    for ConfigCallbackWrapper<'a, 'b, T, U>
+{
     fn config(&mut self, config: &mut Config) {
         self.config_callback.config(config);
         self.wrapped.config(config);
