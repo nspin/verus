@@ -295,6 +295,8 @@ pub fn main() {
         // TODO
         assert!(!parsed_verus_inner_args.version);
 
+        let is_core = parsed_verus_inner_args.vstd == rust_verify::config::Vstd::IsCore;
+
         // Track env vars used by Verus
         dep_tracker.get_env("VERUS_Z3_PATH");
         dep_tracker.get_env("VERUS_SINGULAR_PATH");
@@ -306,7 +308,7 @@ pub fn main() {
         let verifier = Verifier::new(parsed_verus_inner_args);
 
         let mut rustc_args_for_verify = rustc_args.clone();
-        extend_rustc_args_for_verify(&mut rustc_args_for_verify);
+        extend_rustc_args_for_verify(&mut rustc_args_for_verify, is_core);
 
         let mut verifier_callbacks = ConfigCallbackWrapper::new(
             dep_tracker_config_callback.clone(),
@@ -348,7 +350,7 @@ pub fn main() {
             Ok(())
         } else {
             let mut rustc_args_for_compile = rustc_args.clone();
-            extend_rustc_args_for_compile(&mut rustc_args_for_compile);
+            extend_rustc_args_for_compile(&mut rustc_args_for_compile, is_core);
             let do_compile = verifier.args.compile;
             rustc_driver::RunCompiler::new(
                 &rustc_args_for_compile,
@@ -439,14 +441,21 @@ fn extend_rustc_args_for_builtin_and_builtin_macros(args: &mut Vec<String>) {
     args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
 }
 
-fn extend_rustc_args_for_verify(args: &mut Vec<String>) {
+fn extend_rustc_args_for_verify(args: &mut Vec<String>, is_core: bool) {
     rust_verify::config::enable_default_features_and_verus_attr(args, true, false);
     args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
     args.extend(["--cfg", "verus_keep_ghost_body"].map(ToOwned::to_owned));
+    if is_core {
+        args.extend(["--cfg", "verus_verify_core"].map(|s| s.to_string()));
+    }
 }
 
-fn extend_rustc_args_for_compile(args: &mut Vec<String>) {
+fn extend_rustc_args_for_compile(args: &mut Vec<String>, is_core: bool) {
     rust_verify::config::enable_default_features_and_verus_attr(args, true, true);
+    args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
+    if is_core {
+        args.extend(["--cfg", "verus_verify_core"].map(|s| s.to_string()));
+    }
     let allow = &[
         "unused_imports",
         "unused_variables",
@@ -463,7 +472,6 @@ fn extend_rustc_args_for_compile(args: &mut Vec<String>) {
     for a in allow {
         args.extend(["-A", a].map(ToOwned::to_owned));
     }
-    args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
 }
 
 fn display_help() {

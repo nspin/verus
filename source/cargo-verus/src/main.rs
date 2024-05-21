@@ -168,12 +168,16 @@ impl VerusCmd {
 
             let mut verus_driver_args_for_package = vec![];
 
+            if verus_metadata.no_vstd {
+                verus_driver_args_for_package.push("--verus-arg=--no-vstd".to_owned());
+            }
+
             if verus_metadata.is_vstd {
                 verus_driver_args_for_package.push("--verus-arg=--is-vstd".to_owned());
             }
 
-            if verus_metadata.no_vstd {
-                verus_driver_args_for_package.push("--verus-arg=--no-vstd".to_owned());
+            if verus_metadata.is_core {
+                verus_driver_args_for_package.push("--verus-arg=--is-core".to_owned());
             }
 
             for import in verus_metadata.imports.iter() {
@@ -256,6 +260,8 @@ struct VerusMetadata {
     is_builtin: bool,
     #[serde(rename = "is-builtin-macros", default)]
     is_builtin_macros: bool,
+    #[serde(rename = "is-core", default)]
+    is_core: bool,
     #[serde(default)]
     imports: Vec<String>,
 }
