@@ -30,7 +30,7 @@ mod dep_tracker;
 use callback_utils::{
     probe_after_crate_root_parsing, probe_config, ConfigCallbackWrapper, DefaultCallbacks,
 };
-use dep_tracker::DepTracker;
+use dep_tracker::{DepTracker, DepTrackerConfigCallback};
 
 const BUG_REPORT_URL: &str = "https://github.com/verus-lang/verus/issues/new";
 
@@ -142,7 +142,10 @@ pub fn main() {
 
                 return rustc_driver::RunCompiler::new(
                     &orig_args,
-                    &mut ConfigCallbackWrapper::new(Arc::new(dep_tracker), DefaultCallbacks),
+                    &mut ConfigCallbackWrapper::new(
+                        DepTrackerConfigCallback::new(Arc::new(dep_tracker)),
+                        DefaultCallbacks,
+                    ),
                 )
                 .set_using_internal_features(using_internal_features.clone())
                 .run();
@@ -296,7 +299,7 @@ pub fn main() {
         dep_tracker.get_env("VERUS_Z3_PATH");
         dep_tracker.get_env("VERUS_SINGULAR_PATH");
 
-        let dep_tracker = Arc::new(dep_tracker);
+        let dep_tracker_config_callback = DepTrackerConfigCallback::new(Arc::new(dep_tracker));
 
         let mk_file_loader = || rust_verify::file_loader::RealFileLoader;
 
@@ -306,7 +309,7 @@ pub fn main() {
         extend_rustc_args_for_verify(&mut rustc_args_for_verify);
 
         let mut verifier_callbacks = ConfigCallbackWrapper::new(
-            dep_tracker.clone(),
+            dep_tracker_config_callback.clone(),
             VerifierCallbacksEraseMacro {
                 verifier,
                 rust_start_time: Instant::now(),
@@ -350,7 +353,7 @@ pub fn main() {
             rustc_driver::RunCompiler::new(
                 &rustc_args_for_compile,
                 &mut ConfigCallbackWrapper::new(
-                    dep_tracker.clone(),
+                    dep_tracker_config_callback.clone(),
                     CompilerCallbacksEraseMacro { do_compile },
                 ),
             )

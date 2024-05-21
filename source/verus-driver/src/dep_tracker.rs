@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::env::{self, VarError};
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use rustc_span::symbol::Symbol;
 
@@ -29,17 +28,28 @@ impl DepTracker {
     }
 }
 
-impl ConfigCallback for Arc<DepTracker> {
+#[derive(Clone)]
+pub(crate) struct DepTrackerConfigCallback<T> {
+    dep_tracker: T,
+}
+
+impl<T> DepTrackerConfigCallback<T> {
+    pub(crate) fn new(dep_tracker: T) -> Self {
+        Self { dep_tracker }
+    }
+}
+
+impl<T: AsRef<DepTracker> + Clone + Send + 'static> ConfigCallback for DepTrackerConfigCallback<T> {
     fn config(&mut self, config: &mut rustc_interface::Config) {
-        let dep_tracker = self.clone();
+        let dep_tracker = self.dep_tracker.clone();
         config.parse_sess_created = Some(Box::new(move |psess| {
-            for (var, val) in dep_tracker.env.iter() {
+            for (var, val) in dep_tracker.as_ref().env.iter() {
                 psess
                     .env_depinfo
                     .get_mut()
                     .insert((Symbol::intern(var), val.as_deref().map(Symbol::intern)));
             }
-            for path in dep_tracker.files.iter() {
+            for path in dep_tracker.as_ref().files.iter() {
                 psess.file_depinfo.get_mut().insert(Symbol::intern(
                     path.to_str()
                         .unwrap_or_else(|| panic!("{} is not valid unicode", path.display())),
