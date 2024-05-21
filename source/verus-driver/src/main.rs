@@ -344,7 +344,7 @@ pub fn main() {
             panic!("verification failed");
         }
 
-        let compile_status = if !verifier.args.compile && verifier.args.no_lifetime {
+        if !verifier.args.compile && verifier.args.no_lifetime {
             Ok(())
         } else {
             let mut rustc_args_for_compile = rustc_args.clone();
@@ -359,14 +359,7 @@ pub fn main() {
             )
             .set_using_internal_features(using_internal_features)
             .run()
-        };
-
-        if compile_status.is_err() {
-            // TODO
-            panic!("compilation failed");
         }
-
-        compile_status
     }))
 }
 
