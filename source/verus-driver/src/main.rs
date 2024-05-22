@@ -28,11 +28,9 @@ mod dep_tracker;
 mod verifier;
 
 use callback_utils::{
-    probe_after_crate_root_parsing, probe_config, ConfigCallback, ConfigCallbackWrapper,
-    DefaultCallbacks,
+    probe_after_crate_root_parsing, probe_config, ConfigCallbackWrapper, DefaultCallbacks,
 };
 use dep_tracker::{DepTracker, DepTrackerConfigCallback};
-use verifier::CompilerRunner;
 
 const BUG_REPORT_URL: &str = "https://github.com/verus-lang/verus/issues/new";
 
@@ -297,41 +295,8 @@ pub fn main() {
                 .run()
         };
 
-        // let compiler_runner = ConfigCallbackCompilerRunner::new(
-        //     dep_tracker_config_callback,
-        //     |run_compiler: RunCompiler| {
-        //         run_compiler.set_using_internal_features(using_internal_features.clone()).run()
-        //     },
-        // );
-
         verifier::run(verus_inner_args.into_iter(), &rustc_args, mk_file_loader, compiler_runner)
     }))
-}
-
-struct ConfigCallbackCompilerRunner<T, F> {
-    config_callback: T,
-    f: F,
-}
-
-impl<T, F> ConfigCallbackCompilerRunner<T, F> {
-    fn new(config_callback: T, f: F) -> Self {
-        Self { config_callback, f }
-    }
-}
-
-impl<T: ConfigCallback + Send, F: FnMut(RunCompiler) -> Result<(), ErrorGuaranteed>> CompilerRunner
-    for ConfigCallbackCompilerRunner<T, F>
-{
-    fn run_compiler<C: Callbacks + Send>(
-        &mut self,
-        args: &[String],
-        callbacks: &mut C,
-    ) -> Result<(), ErrorGuaranteed> {
-        (self.f)(RunCompiler::new(
-            args,
-            &mut ConfigCallbackWrapper::new(&mut self.config_callback, callbacks),
-        ))
-    }
 }
 
 fn get_package_id_from_env(dep_tracker: &mut DepTracker) -> Option<String> {
