@@ -1,5 +1,5 @@
-#![feature(rustc_private)]
 #![feature(closure_lifetime_binder)]
+#![feature(rustc_private)]
 
 extern crate rustc_driver;
 extern crate rustc_interface;
@@ -68,7 +68,7 @@ pub fn main() {
         if let Some(pos) = orig_args.iter().position(|arg| arg == "--rustc") {
             orig_args.remove(pos);
             orig_args[0] = "rustc".to_string();
-            return rustc_driver::RunCompiler::new(&orig_args, &mut DefaultCallbacks).run();
+            return RunCompiler::new(&orig_args, &mut DefaultCallbacks).run();
         }
 
         if orig_args.iter().any(|a| a == "--version" || a == "-V") {
@@ -98,7 +98,7 @@ pub fn main() {
             orig_args.windows(2).any(|window| window[0] == "--crate-name" && window[1] == "___");
 
         if this_invocation_is_cargo_probing {
-            return rustc_driver::RunCompiler::new(&orig_args, &mut DefaultCallbacks).run();
+            return RunCompiler::new(&orig_args, &mut DefaultCallbacks).run();
         }
 
         let mut dep_tracker = DepTracker::default();
@@ -139,7 +139,7 @@ pub fn main() {
                     extend_rustc_args_for_builtin_and_builtin_macros(&mut orig_args);
                 }
 
-                return rustc_driver::RunCompiler::new(
+                return RunCompiler::new(
                     &orig_args,
                     &mut ConfigCallbackWrapper::new(
                         &mut DepTrackerConfigCallback::new(Arc::new(dep_tracker)),
