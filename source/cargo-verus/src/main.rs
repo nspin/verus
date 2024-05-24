@@ -185,6 +185,9 @@ impl VerusCmd {
                 verus_driver_args_for_package.push("--verus-arg=--is-core".to_owned());
             }
 
+            // TODO
+            // Do we want this implicit behavior? Or should we always require imports = ["vstd"] instead?
+            // Also, should this be implemented here or in verus-driver?
             if !verus_metadata.is_vstd && !verus_metadata.no_vstd {
                 let key = "vstd".to_owned();
                 if verus_metadata.imports.contains(&key) {
