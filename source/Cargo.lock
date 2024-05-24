@@ -542,6 +542,9 @@ dependencies = [
 [[package]]
 name = "doubly-linked-xor-test-using-verus-sysroot"
 version = "0.1.0"
+dependencies = [
+ "doubly-linked-xor",
+]
 
 [[package]]
 name = "dtoa"
