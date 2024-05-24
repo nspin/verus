@@ -35,9 +35,6 @@ cargo verus -p doubly-linked-xor-test -- --verus-arg=--rlimit=60
 # run it
 $target_dir/debug/doubly-linked-xor-test
 
-# build and verify examples from ../rust_verify/example
-cargo verus --manifest-path rust-verify-examples/Cargo.toml --target-dir=$target_dir --examples
-
 # build and verify example using pre-built sysroot
 
 verus_sysroot_parent=$(cd ../verus-sysroot-dummy && pwd)
