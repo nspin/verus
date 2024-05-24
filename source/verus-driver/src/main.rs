@@ -136,6 +136,7 @@ pub fn main() {
                     == Some("1");
 
                 if is_builtin || is_builtin_macros {
+                    set_rustc_bootstrap();
                     extend_rustc_args_for_builtin_and_builtin_macros(&mut orig_args);
                 }
 
@@ -285,6 +286,8 @@ pub fn main() {
         dep_tracker.get_env("VERUS_Z3_PATH");
         dep_tracker.get_env("VERUS_SINGULAR_PATH");
 
+        set_rustc_bootstrap();
+
         let mut dep_tracker_config_callback = DepTrackerConfigCallback::new(Arc::new(dep_tracker));
 
         let mk_file_loader = || rustc_span::source_map::RealFileLoader;
@@ -373,6 +376,10 @@ struct VerusDriverInnerArgs {
 
 fn extend_rustc_args_for_builtin_and_builtin_macros(args: &mut Vec<String>) {
     args.extend(["--cfg", "verus_keep_ghost"].map(ToOwned::to_owned));
+}
+
+fn set_rustc_bootstrap() {
+    env::set_var("RUSTC_BOOTSTRAP", "1");
 }
 
 fn display_help() {

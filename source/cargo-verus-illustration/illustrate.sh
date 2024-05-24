@@ -11,10 +11,7 @@ set -eu -o pipefail
 [ -n "$VERUS_Z3_PATH" ]
 [ -n "$VERUS_SINGULAR_PATH" ]
 
-# for using nightly-only features on stable
-export RUSTC_BOOTSTRAP=1
-
-cargo build -p verus-driver --features singular
+RUSTC_BOOTSTRAP=1 cargo build -p verus-driver --features singular
 
 # verify an example without codegen (like cargo check) and without applying rustc (like rust_verify without --compile)
 cargo run -p cargo-verus -- --check --just-verify -p doubly-linked-xor-test

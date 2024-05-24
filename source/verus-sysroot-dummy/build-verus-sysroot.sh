@@ -5,9 +5,7 @@ set -eu -o pipefail
 [ -n "$VERUS_Z3_PATH" ]
 [ -n "$VERUS_SINGULAR_PATH" ]
 
-export RUSTC_BOOTSTRAP=1
-
-cargo build -p verus-driver --features singular --release
+RUSTC_BOOTSTRAP=1 cargo build -p verus-driver --features singular
 
 verus_sysroot=verus-sysroot
 
