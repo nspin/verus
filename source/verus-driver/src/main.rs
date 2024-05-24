@@ -362,10 +362,6 @@ struct VerusDriverInnerArgs {
     #[arg(long)]
     compile_when_not_primary_package: bool,
     #[arg(long)]
-    is_builtin: bool,
-    #[arg(long)]
-    is_builtin_macros: bool,
-    #[arg(long)]
     find_import: Vec<String>,
     #[arg(long)]
     verus_sysroot: Option<String>,
