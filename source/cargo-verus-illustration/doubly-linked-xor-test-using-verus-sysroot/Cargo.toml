@@ -1,5 +1,5 @@
 [package]
-name = "doubly-linked-xor-using-verus-sysroot"
+name = "doubly-linked-xor-test-using-verus-sysroot"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,3 +7,4 @@ edition = "2021"
 
 [package.metadata.verus]
 verify = true
+imports = ["doubly_linked_xor"]

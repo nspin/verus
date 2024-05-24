@@ -247,7 +247,9 @@ pub fn main() {
         }
 
         for key in &parsed_verus_driver_inner_args.find_import {
-            let paths = externs.get(key).unwrap();
+            let paths = externs
+                .get(key)
+                .unwrap_or_else(|| panic!("missing --extern corresponding to --import {key:?}"));
             assert_eq!(paths.len(), 1);
             let path = &paths[0];
             assert!(["rlib", "rmeta"].contains(&path.extension().unwrap().to_str().unwrap()));

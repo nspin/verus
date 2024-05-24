@@ -21,7 +21,8 @@ members = [
   "tools/line_count",
   "tools/qi-graph",
   "cargo-verus-illustration/doubly-linked-xor",
-  "cargo-verus-illustration/doubly-linked-xor-using-verus-sysroot",
+  "cargo-verus-illustration/doubly-linked-xor-test",
+  "cargo-verus-illustration/doubly-linked-xor-test-using-verus-sysroot",
   "cargo-verus-illustration/rust-verify-examples",
 ]
 

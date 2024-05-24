@@ -185,7 +185,7 @@ impl VerusCmd {
                 verus_driver_args_for_package.push("--verus-arg=--is-core".to_owned());
             }
 
-            if !verus_metadata.no_vstd {
+            if !verus_metadata.is_vstd && !verus_metadata.no_vstd {
                 let key = "vstd".to_owned();
                 if verus_metadata.imports.contains(&key) {
                     panic!("package.metadata.verus.no-vstd implies package.metadata.verus.imports = [\"vstd\"]");

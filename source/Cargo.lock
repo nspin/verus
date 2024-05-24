@@ -530,7 +530,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "doubly-linked-xor-using-verus-sysroot"
+name = "doubly-linked-xor-test"
+version = "0.1.0"
+dependencies = [
+ "builtin",
+ "builtin_macros",
+ "doubly-linked-xor",
+ "vstd",
+]
+
+[[package]]
+name = "doubly-linked-xor-test-using-verus-sysroot"
 version = "0.1.0"
 
 [[package]]
