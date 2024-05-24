@@ -7,7 +7,7 @@ edition = "2021"
 vstd = { path = "../../vstd" }
 builtin = { path = "../../builtin" }
 builtin_macros = { path = "../../builtin_macros" }
-doubly-linked-xor = { path = "../doubly-linked-xor" }
+doubly-linked-xor = { path = "../doubly-linked-xor", features = ["explicit-verus-deps"] }
 
 [package.metadata.verus]
 verify = true
