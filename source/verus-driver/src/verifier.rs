@@ -91,7 +91,6 @@ where
     }
 
     if status.is_err() || verifier.encountered_vir_error {
-        // TODO
         panic!("verification failed");
     }
 

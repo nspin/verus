@@ -184,7 +184,6 @@ pub fn main() {
 
         let parsed_verus_driver_inner_args =
             VerusDriverInnerArgs::try_parse_from(&verus_driver_inner_args).unwrap_or_else(|err| {
-                // TODO
                 panic!(
                 "failed to parse verus driver inner args from {verus_driver_inner_args:?}: {err}"
             )

@@ -118,7 +118,6 @@ impl VerusCmd {
         let mut cmd = MetadataCommand::new();
         cmd.other_options(cargo_metadata_args);
         cmd.exec().unwrap_or_else(|err| {
-            // TODO
             panic!("cargo metadata command {:?} failed: {:?}", cmd, err);
         })
     }
@@ -189,7 +188,6 @@ impl VerusCmd {
             if !verus_metadata.no_vstd {
                 let key = "vstd".to_owned();
                 if verus_metadata.imports.contains(&key) {
-                    // TODO
                     panic!("package.metadata.verus.no-vstd implies package.metadata.verus.imports = [\"vstd\"]");
                 }
                 verus_metadata.imports.push(key);
@@ -242,7 +240,6 @@ fn filter_args(
                 orig_args
                     .next()
                     .unwrap_or_else(|| {
-                        // TODO
                         panic!("expected {} to be followed by a value", arg.as_ref())
                     })
                     .as_ref()
@@ -289,7 +286,6 @@ fn get_verus_metadata(package: &cargo_metadata::Package) -> VerusMetadata {
         .and_then(|obj| obj.get("verus"))
         .map(|v| {
             serde_json::from_value::<VerusMetadata>(v.clone()).unwrap_or_else(|err| {
-                // TODO
                 panic!(
                     "failed to parse {}-{}.metadata.verus: {}",
                     package.name, package.version, err

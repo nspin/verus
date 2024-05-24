@@ -7,4 +7,3 @@ edition = "2021"
 
 [package.metadata.verus]
 verify = true
-imports = ["vstd"]
