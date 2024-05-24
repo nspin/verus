@@ -7,33 +7,40 @@
 
 set -eu -o pipefail
 
-# require VERUS_Z3_PATH and VERUS_SINGULAR_PATH to be set
+# ensure that VERUS_Z3_PATH and VERUS_SINGULAR_PATH are set
 [ -n "$VERUS_Z3_PATH" ]
 [ -n "$VERUS_SINGULAR_PATH" ]
 
 RUSTC_BOOTSTRAP=1 cargo build -p verus-driver --features singular
 
-# verify an example without codegen (like cargo check) and without applying rustc (like rust_verify without --compile)
-cargo run -p cargo-verus -- --check --just-verify -p doubly-linked-xor-test
+cargo build -p cargo-verus
+
+target_dir=$(cd ../target && pwd)
+
+export PATH="$target_dir/debug:$PATH"
+
+# verify an example without codegen (like cargo check) and without applying rustc (like rust_verify
+# without --compile)
+cargo verus --check --just-verify -p doubly-linked-xor-test
 
 # verify an example without codegen (like cargo check)
-cargo run -p cargo-verus -- --check -p doubly-linked-xor-test
+cargo verus --check -p doubly-linked-xor-test
 
 # build and verify an example with codegen (like cargo build)
-cargo run -p cargo-verus -- -p doubly-linked-xor-test
+cargo verus -p doubly-linked-xor-test
 
 # this time with an argument for verus
-cargo run -p cargo-verus -- -p doubly-linked-xor-test -- --verus-arg=--rlimit=60
+cargo verus -p doubly-linked-xor-test -- --verus-arg=--rlimit=60
 
 # run it
-../target/debug/doubly-linked-xor-test
+$target_dir/debug/doubly-linked-xor-test
 
 # build and verify examples from ../rust_verify/example
-cargo run -p cargo-verus -- --manifest-path rust-verify-examples/Cargo.toml --examples
+cargo verus --manifest-path rust-verify-examples/Cargo.toml --target-dir=$target_dir --examples
 
 # build and verify example using pre-built sysroot
 
-verus_sysroot_parent=$(realpath ../verus-sysroot-dummy)
+verus_sysroot_parent=$(cd ../verus-sysroot-dummy && pwd)
 
 pushd $verus_sysroot_parent
 ./build-verus-sysroot.sh
@@ -41,10 +48,9 @@ popd
 
 verus_sysroot=$verus_sysroot_parent/verus-sysroot
 
-VERUS_SYSROOT=$verus_sysroot \
-    cargo run -p cargo-verus -- -p doubly-linked-xor-test-using-verus-sysroot
+VERUS_SYSROOT=$verus_sysroot cargo verus -p doubly-linked-xor-test-using-verus-sysroot
 
 # specify sysroot another way
 
-cargo run -p cargo-verus -- -p doubly-linked-xor-test-using-verus-sysroot -- \
+cargo verus -p doubly-linked-xor-test-using-verus-sysroot -- \
     --verus-driver-arg=--verus-sysroot=$verus_sysroot
