@@ -346,7 +346,6 @@ fn get_verus_driver_version(path: &Path) -> Version {
             return None;
         }
         let version = Version::parse(parts.next()?).ok()?;
-        let _ = parts.next()?;
         Some(version)
     })()
     .unwrap_or_else(|| panic!("{cmd:?} did not produce valid output"))
