@@ -135,6 +135,7 @@ impl VerusCmd {
         let mut cmd = Command::new(env::var("CARGO").unwrap_or("cargo".into()));
 
         cmd.env("RUSTC_WRAPPER", checked_verus_driver_path())
+            .env("__VERUS_DRIVER_VIA_CARGO__", "1")
             .arg(self.cargo_subcommand.to_arg().to_owned())
             .args(&self.cargo_args);
 
@@ -337,7 +338,7 @@ fn get_verus_driver_version(path: &Path) -> Version {
         cmd.output().unwrap_or_else(|err| panic!("reading output of {cmd:?} failed with {err}"));
     if !output.status.success() {
         panic!(
-            "{cmd:?} failed with {}\nstdout:\n{:?}\nstderr:\n{:?}",
+            "command {cmd:?} failed with {}\nstdout: {:?}\nstderr: {:?}",
             output.status,
             str::from_utf8(&output.stdout),
             str::from_utf8(&output.stderr)
@@ -353,7 +354,7 @@ fn get_verus_driver_version(path: &Path) -> Version {
         let version = Version::parse(parts.next()?).ok()?;
         Some(version)
     })()
-    .unwrap_or_else(|| panic!("{cmd:?} did not produce valid output"))
+    .unwrap_or_else(|| panic!("command {cmd:?} did not produce valid output"))
 }
 
 #[must_use]
