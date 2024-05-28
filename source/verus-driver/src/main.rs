@@ -311,6 +311,13 @@ pub fn main() {
 }
 
 fn get_package_id_from_env(dep_tracker: &mut DepTracker) -> Option<String> {
+    if let Some("cargo-verus") | Some("verus-driver") =
+        dep_tracker.get_env("CARGO_CRATE_NAME").as_deref()
+    {
+        // HACK enable running cargo-verus and verus-driver using 'cargo run'
+        // TODO find a more sound way of detecting this case
+        return None;
+    }
     match (
         dep_tracker.get_env("CARGO_PKG_NAME"),
         dep_tracker.get_env("CARGO_PKG_VERSION"),
