@@ -317,7 +317,14 @@ fn get_package_id_from_env(dep_tracker: &mut DepTracker) -> Option<String> {
         dep_tracker.get_env("CARGO_MANIFEST_DIR"),
     ) {
         (Some(name), Some(version), Some(manifest_dir)) => {
-            Some(mk_package_id(name, version, format!("{manifest_dir}/Cargo.toml")))
+            if dep_tracker.get_env("CARGO_CRATE_NAME").is_some() {
+                Some(mk_package_id(name, version, format!("{manifest_dir}/Cargo.toml")))
+            } else {
+                // HACK: we use this detect and filter out cases where verus-driver is being run via
+                // cargo run
+                // TODO: find a more sound way of detecting this case
+                None
+            }
         }
         _ => None,
     }
