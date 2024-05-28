@@ -332,7 +332,7 @@ fn unchecked_verus_driver_path() -> PathBuf {
 
 fn get_verus_driver_version(path: &Path) -> Version {
     let mut cmd = Command::new(path);
-    cmd.arg("-V");
+    cmd.arg("--verus-driver-arg=--version");
     let output =
         cmd.output().unwrap_or_else(|err| panic!("reading output of {cmd:?} failed with {err}"));
     if !output.status.success() {
