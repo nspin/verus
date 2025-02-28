@@ -48,7 +48,7 @@ impl<T> DepTrackerConfigCallback<T> {
 impl<T: AsRef<DepTracker> + Clone + Send + 'static> ConfigCallback for DepTrackerConfigCallback<T> {
     fn config(&mut self, config: &mut rustc_interface::Config) {
         let dep_tracker = self.dep_tracker.clone();
-        config.parse_sess_created = Some(Box::new(move |psess| {
+        config.psess_created = Some(Box::new(move |psess| {
             for (var, val) in dep_tracker.as_ref().env.iter() {
                 psess
                     .env_depinfo

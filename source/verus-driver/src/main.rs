@@ -46,7 +46,7 @@ pub fn main() {
             // as simple as moving the call from the hook to main, because `install_ice_hook` doesn't
             // accept a generic closure.
             let version_info = rustc_tools_util::get_version_info!();
-            handler.note(format!("Verus version: {version_info}"));
+            handler.handle().note(format!("Verus version: {version_info}"));
         })
     } else {
         Arc::new(AtomicBool::new(false))
@@ -59,7 +59,7 @@ pub fn main() {
             orig_args.remove(1);
             let mut buffer = String::new();
             std::io::stdin().read_to_string(&mut buffer).unwrap_or_else(|err| {
-                early_dcx.early_error(format!("failed to read stdin: {err:?}"))
+                early_dcx.early_fatal(format!("failed to read stdin: {err:?}"))
             });
             verifier::lifetime_rustc_driver(&orig_args, buffer);
             return Ok(());
@@ -185,7 +185,7 @@ pub fn main() {
 
         let parsed_verus_driver_inner_args =
             VerusDriverInnerArgs::try_parse_from(&verus_driver_inner_args).unwrap_or_else(|err| {
-                early_dcx.early_error(format!(
+                early_dcx.early_fatal(format!(
                 "failed to parse verus driver inner args from {verus_driver_inner_args:?}: {err}"
             ))
             });
@@ -202,7 +202,7 @@ pub fn main() {
         }
 
         let orig_rustc_opts = probe_config(&orig_rustc_args, |config| config.opts.clone())
-            .unwrap_or_else(|_| early_dcx.early_error("failed to parse rustc args"));
+            .unwrap_or_else(|_| early_dcx.early_fatal("failed to parse rustc args"));
 
         let mut rustc_args = orig_rustc_args;
 
@@ -249,7 +249,7 @@ pub fn main() {
                 let path = {
                     let report_missing_or_corrupt = || {
                         early_dcx
-                            .early_error("verus sysroot appears to be either missing or corrupt");
+                            .early_fatal("verus sysroot appears to be either missing or corrupt");
                     };
                     let mut paths = glob::glob(pattern.as_str()).unwrap();
                     let path = paths
@@ -260,7 +260,7 @@ pub fn main() {
                         })
                         .unwrap_or_else(|err| {
                             early_dcx
-                                .early_error(format!("failed to traverse verus sysroot: {err:?}"))
+                                .early_fatal(format!("failed to traverse verus sysroot: {err:?}"))
                         });
                     if paths.next().is_some() {
                         report_missing_or_corrupt();
@@ -298,7 +298,7 @@ pub fn main() {
                     }
                 }
                 if !found {
-                    early_dcx.early_error(format!("could not find .vir file for '{key}'"));
+                    early_dcx.early_fatal(format!("could not find .vir file for '{key}'"));
                 }
             }
         }
@@ -312,13 +312,14 @@ pub fn main() {
             let crate_meta_path =
                 probe_after_crate_root_parsing(&rustc_args, |_compiler, queries| {
                     queries.global_ctxt().unwrap().enter(move |tcx| {
-                        tcx.output_filenames(())
-                            .output_path(rustc_session::config::OutputType::Metadata)
+                        tcx.output_filenames(()).path(rustc_session::config::OutputType::Metadata)
                     })
                 })
                 .unwrap();
 
-            crate_meta_path.with_extension("vir")
+            assert!(!crate_meta_path.is_stdout());
+
+            crate_meta_path.as_path().with_extension("vir")
         };
 
         verus_inner_args.extend(["--export".to_owned(), format!("{}", vir_path.display())]);
